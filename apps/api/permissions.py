@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from typing import Optional
-from uuid import UUID
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, select
@@ -18,6 +18,9 @@ from apps.api.models_permissions import (
     RolePermissionORM,
     UserPermissionORM,
     AuditLogORM,
+    RoleORM,
+    TeamORM,
+    TeamMemberORM,
 )
 from apps.api.database import UserORM
 from packages.domain.permissions_enums import AccessLevel, PermissionAction, ResourceType, RoleType, AuditAction
@@ -167,7 +170,7 @@ def grant_permission_to_user(
         expires_at: Unix timestamp cuando expira el permiso (None = nunca)
     """
     perm = UserPermissionORM(
-        id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+        id=str(uuid4()),
         user_id=user_id,
         permission_id=permission_id,
         granted_by=granted_by_user_id,
@@ -238,7 +241,7 @@ def grant_resource_access(
         existing.expires_at = expires_at
     else:
         access = ResourceAccessORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             user_id=user_id,
             resource_type=resource_type,
             resource_id=resource_id,
@@ -307,7 +310,7 @@ def log_audit_event(
         error_message: Mensaje de error si falló
     """
     log_entry = AuditLogORM(
-        id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+        id=str(uuid4()),
         user_id=user_id,
         action=action,
         resource_type=resource_type,
@@ -334,7 +337,7 @@ def create_default_permissions(session: Session) -> None:
     permissions_to_create = [
         # Permisos de Jobs
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="create_job",
             display_name="Crear Trabajo",
             description="Crear nuevo trabajo de procesamiento",
@@ -342,7 +345,7 @@ def create_default_permissions(session: Session) -> None:
             action="create",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="read_job",
             display_name="Ver Trabajo",
             description="Ver detalles de un trabajo",
@@ -350,7 +353,7 @@ def create_default_permissions(session: Session) -> None:
             action="read",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="update_job",
             display_name="Actualizar Trabajo",
             description="Modificar un trabajo",
@@ -358,7 +361,7 @@ def create_default_permissions(session: Session) -> None:
             action="update",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="delete_job",
             display_name="Eliminar Trabajo",
             description="Eliminar un trabajo",
@@ -366,7 +369,7 @@ def create_default_permissions(session: Session) -> None:
             action="delete",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="process_job",
             display_name="Procesar Trabajo",
             description="Procesar PDF (OCR, validación)",
@@ -374,7 +377,7 @@ def create_default_permissions(session: Session) -> None:
             action="process",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="review_job",
             display_name="Revisar Trabajo",
             description="Realizar revisión manual",
@@ -382,7 +385,7 @@ def create_default_permissions(session: Session) -> None:
             action="review",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="approve_job",
             display_name="Aprobar Trabajo",
             description="Aprobar resultado final",
@@ -390,7 +393,7 @@ def create_default_permissions(session: Session) -> None:
             action="approve",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="export_jobs",
             display_name="Exportar Trabajos",
             description="Exportar datos de trabajos",
@@ -399,7 +402,7 @@ def create_default_permissions(session: Session) -> None:
         ),
         # Permisos de Usuarios
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="create_user",
             display_name="Crear Usuario",
             description="Crear nuevo usuario",
@@ -407,7 +410,7 @@ def create_default_permissions(session: Session) -> None:
             action="create",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="read_user",
             display_name="Ver Usuario",
             description="Ver datos de usuario",
@@ -415,7 +418,7 @@ def create_default_permissions(session: Session) -> None:
             action="read",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="update_user",
             display_name="Actualizar Usuario",
             description="Modificar datos de usuario",
@@ -423,7 +426,7 @@ def create_default_permissions(session: Session) -> None:
             action="update",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="delete_user",
             display_name="Eliminar Usuario",
             description="Eliminar usuario del sistema",
@@ -431,7 +434,7 @@ def create_default_permissions(session: Session) -> None:
             action="delete",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="grant_permission",
             display_name="Otorgar Permiso",
             description="Asignar permisos a usuarios",
@@ -439,7 +442,7 @@ def create_default_permissions(session: Session) -> None:
             action="update",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="revoke_permission",
             display_name="Revocar Permiso",
             description="Remover permisos de usuarios",
@@ -448,7 +451,7 @@ def create_default_permissions(session: Session) -> None:
         ),
         # Permisos de Equipos
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="create_team",
             display_name="Crear Equipo",
             description="Crear nuevo equipo/departamento",
@@ -456,7 +459,7 @@ def create_default_permissions(session: Session) -> None:
             action="create",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="read_team",
             display_name="Ver Equipo",
             description="Ver datos del equipo",
@@ -464,7 +467,7 @@ def create_default_permissions(session: Session) -> None:
             action="read",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="update_team",
             display_name="Actualizar Equipo",
             description="Modificar datos del equipo",
@@ -472,7 +475,7 @@ def create_default_permissions(session: Session) -> None:
             action="update",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="delete_team",
             display_name="Eliminar Equipo",
             description="Eliminar equipo",
@@ -481,7 +484,7 @@ def create_default_permissions(session: Session) -> None:
         ),
         # Permisos de Reportes
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="read_report",
             display_name="Ver Reportes",
             description="Ver reportes del sistema",
@@ -489,7 +492,7 @@ def create_default_permissions(session: Session) -> None:
             action="read",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="create_report",
             display_name="Crear Reportes",
             description="Generar nuevos reportes",
@@ -497,7 +500,7 @@ def create_default_permissions(session: Session) -> None:
             action="create",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="export_report",
             display_name="Exportar Reportes",
             description="Exportar reportes",
@@ -506,7 +509,7 @@ def create_default_permissions(session: Session) -> None:
         ),
         # Permisos de Auditoría
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="read_audit_log",
             display_name="Ver Auditoría",
             description="Ver logs de auditoría",
@@ -514,7 +517,7 @@ def create_default_permissions(session: Session) -> None:
             action="read",
         ),
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="export_audit_log",
             display_name="Exportar Auditoría",
             description="Exportar logs de auditoría",
@@ -523,7 +526,7 @@ def create_default_permissions(session: Session) -> None:
         ),
         # Permisos de Importación
         PermissionORM(
-            id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+            id=str(uuid4()),
             name="import_formative_actions",
             display_name="Importar Acciones Formativas",
             description="Importar datos de acciones formativas",
@@ -576,7 +579,7 @@ def create_default_roles(session: Session) -> None:
             
             if permission:
                 role_perm = RolePermissionORM(
-                    id=str(UUID.uuid4() if isinstance(UUID, type) else UUID),
+                    id=str(uuid4()),
                     role_name=role_name,
                     permission_id=permission.id,
                 )

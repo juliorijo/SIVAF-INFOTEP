@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIVAF - Panel de Control Multi-usuario</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 28px;
+        }
+
+        .header p {
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .user-selector {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .role-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            background: #f0f0f0;
+            color: #333;
+        }
+
+        .role-btn.active {
+            transform: scale(1.05);
+            box-shadow: 0 5px 20px rgba(0,0,0,0.2);
+        }
+
+        .role-btn[data-role="admin"] {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .role-btn[data-role="admin"].active {
+            background: #ff5252;
+        }
+
+        .role-btn[data-role="supervisor"] {
+            background: #4ecdc4;
+            color: white;
+        }
+
+        .role-btn[data-role="supervisor"].active {
+            background: #3db8b1;
+        }
+
+        .role-btn[data-role="analyst"] {
+            background: #ffa500;
+            color: white;
+        }
+
+        .role-btn[data-role="analyst"].active {
+            background: #ff9100;
+        }
+
+        .role-btn[data-role="dba"] {
+            background: #9b59b6;
+            color: white;
+        }
+
+        .role-btn[data-role="dba"].active {
+            background: #8e44ad;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 50px rgba(0,0,0,0.15);
+        }
+
+        .card h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 16px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #667eea;
+        }
+
+        .stat-number {
+            font-size: 48px;
+            font-weight: bold;
+            color: #333;
+            margin: 20px 0;
+        }
+
+        .stat-label {
+            color: #999;
+            font-size: 14px;
+        }
+
+        .permissions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .permission-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .permission-item.granted {
+            background: #d4edda;
+            border-left-color: #28a745;
+        }
+
+        .permission-item.denied {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+            text-decoration: line-through;
+            opacity: 0.7;
+        }
+
+        .users-section, .teams-section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .users-section h2, .teams-section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th {
+            background: #f8f9fa;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #667eea;
+            border-bottom: 2px solid #e9ecef;
+        }
+
+        .table td {
+            padding: 15px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .table tr:hover {
+            background: #f8f9fa;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.admin {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .badge.supervisor {
+            background: #4ecdc4;
+            color: white;
+        }
+
+        .badge.analyst {
+            background: #ffa500;
+            color: white;
+        }
+
+        .badge.dba {
+            background: #9b59b6;
+            color: white;
+        }
+
+        .badge.active {
+            background: #28a745;
+            color: white;
+        }
+
+        .badge.inactive {
+            background: #999;
+            color: white;
+        }
+
+        .audit-section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+
+        .audit-section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+
+        .audit-entry {
+            padding: 15px;
+            border-left: 4px solid #667eea;
+            background: #f8f9fa;
+            margin-bottom: 15px;
+            border-radius: 8px;
+        }
+
+        .audit-action {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .audit-time {
+            font-size: 12px;
+            color: #999;
+            margin-top: 8px;
+        }
+
+        .restricted {
+            opacity: 0.5;
+            pointer-events: none;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .alert {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #856404;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .alert.info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+            color: #0c5460;
+        }
+
+        .stats-container {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- HEADER -->
+        <div class="header">
+            <div>
+                <h1>SIVAF - Sistema de Verificación</h1>
+                <p>Panel de Control Multi-usuario con Control de Permisos</p>
+            </div>
+            <div class="user-selector">
+                <button class="role-btn active" data-role="admin">Admin (Total Control)</button>
+                <button class="role-btn" data-role="supervisor">Supervisor (Equipo)</button>
+                <button class="role-btn" data-role="analyst">Analyst (Personal)</button>
+                <button class="role-btn" data-role="dba">DBA (Mantenimiento)</button>
+            </div>
+        </div>
+
+        <!-- ALERT -->
+        <div class="alert info">
+            <strong>FASE 2 COMPLETADA:</strong> Sistema de permisos granulares, multi-usuario y auditoría implementados.
+            Selecciona un rol para ver el dashboard personalizado. Cada rol tiene acceso diferente a usuarios, permisos y datos.
+        </div>
+
+        <!-- DASHBOARD STATS -->
+        <div class="stats-container dashboard">
+            <div class="card">
+                <h3>Trabajos Procesados</h3>
+                <div class="stat-number" id="total-jobs">1,248</div>
+                <div class="stat-label">Documentos analizados</div>
+            </div>
+            <div class="card">
+                <h3>Usuarios Activos</h3>
+                <div class="stat-number" id="active-users">24</div>
+                <div class="stat-label">En los últimos 7 días</div>
+            </div>
+            <div class="card">
+                <h3>Equipos</h3>
+                <div class="stat-number" id="teams-count">4</div>
+                <div class="stat-label">Organizaciones activas</div>
+            </div>
+            <div class="card">
+                <h3>Acciones de Auditoría</h3>
+                <div class="stat-number" id="audit-count">342</div>
+                <div class="stat-label">Registros en los últimos 30 días</div>
+            </div>
+        </div>
+
+        <!-- ROL-SPECIFIC PERMISSIONS -->
+        <div class="card">
+            <h3>Permisos del Rol Actual</h3>
+            <div class="permissions-grid" id="permissions-grid">
+                <!-- Se llenará dinámicamente -->
+            </div>
+        </div>
+
+        <br>
+
+        <!-- USERS SECTION (Admin only) -->
+        <div class="users-section" id="users-section">
+            <h2>Gestión de Usuarios</h2>
+            <div class="alert">Solo administradores pueden ver y modificar usuarios</div>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Usuario</th>
+                        <th>Rol</th>
+                        <th>Departamento</th>
+                        <th>Estado</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>admin_test</td>
+                        <td><span class="badge admin">Admin</span></td>
+                        <td>Administración</td>
+                        <td><span class="badge active">Activo</span></td>
+                        <td><button>Editar</button></td>
+                    </tr>
+                    <tr>
+                        <td>supervisor_test</td>
+                        <td><span class="badge supervisor">Supervisor</span></td>
+                        <td>Supervisión</td>
+                        <td><span class="badge active">Activo</span></td>
+                        <td><button>Editar</button></td>
+                    </tr>
+                    <tr>
+                        <td>analyst_test</td>
+                        <td><span class="badge analyst">Analyst</span></td>
+                        <td>Análisis</td>
+                        <td><span class="badge active">Activo</span></td>
+                        <td><button>Editar</button></td>
+                    </tr>
+                    <tr>
+                        <td>dba_test</td>
+                        <td><span class="badge dba">DBA</span></td>
+                        <td>Base de Datos</td>
+                        <td><span class="badge active">Activo</span></td>
+                        <td><button>Editar</button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- TEAMS SECTION -->
+        <div class="teams-section" id="teams-section">
+            <h2>Gestión de Equipos</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>Equipo</th>
+                        <th>Miembros</th>
+                        <th>Manager</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Equipo de Análisis</td>
+                        <td>5 miembros</td>
+                        <td>supervisor_test</td>
+                        <td><button>Ver</button></td>
+                    </tr>
+                    <tr>
+                        <td>Equipo de QA</td>
+                        <td>3 miembros</td>
+                        <td>analyst_test</td>
+                        <td><button>Ver</button></td>
+                    </tr>
+                    <tr>
+                        <td>Equipo de Operaciones</td>
+                        <td>2 miembros</td>
+                        <td>dba_test</td>
+                        <td><button>Ver</button></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- AUDIT LOG SECTION -->
+        <div class="audit-section" id="audit-section">
+            <h2>Registro de Auditoría</h2>
+            <div class="alert">Mostrando últimas acciones del sistema</div>
+            <div id="audit-log">
+                <!-- Se llenará dinámicamente -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const roleData = {
+            admin: {
+                permissions: [
+                    { name: 'Ver todos los usuarios', granted: true },
+                    { name: 'Crear usuarios', granted: true },
+                    { name: 'Editar usuarios', granted: true },
+                    { name: 'Eliminar usuarios', granted: true },
+                    { name: 'Otorgar permisos', granted: true },
+                    { name: 'Revocar permisos', granted: true },
+                    { name: 'Ver auditoría completa', granted: true },
+                    { name: 'Gestionar equipos', granted: true },
+                    { name: 'Acceso a backups', granted: true },
+                    { name: 'Configurar OCR', granted: true },
+                ],
+                visibleSections: ['users-section', 'teams-section', 'audit-section'],
+                title: 'Administrador (Control Total)',
+            },
+            supervisor: {
+                permissions: [
+                    { name: 'Ver usuarios del equipo', granted: true },
+                    { name: 'Crear usuarios', granted: false },
+                    { name: 'Ver trabajos del equipo', granted: true },
+                    { name: 'Asignar tareas', granted: true },
+                    { name: 'Ver auditoría del equipo', granted: true },
+                    { name: 'Generar reportes', granted: true },
+                    { name: 'Eliminar usuarios', granted: false },
+                    { name: 'Modificar permisos', granted: false },
+                    { name: 'Acceso a backups', granted: false },
+                    { name: 'Ver análisis de sistema', granted: false },
+                ],
+                visibleSections: ['teams-section', 'audit-section'],
+                title: 'Supervisor (Equipo)',
+            },
+            analyst: {
+                permissions: [
+                    { name: 'Ver propios documentos', granted: true },
+                    { name: 'Procesar documentos', granted: true },
+                    { name: 'Cargar PDFs', granted: true },
+                    { name: 'Ver propios trabajos', granted: true },
+                    { name: 'Crear reportes', granted: true },
+                    { name: 'Ver usuarios', granted: false },
+                    { name: 'Gestionar equipos', granted: false },
+                    { name: 'Acceso a auditoría', granted: false },
+                    { name: 'Modificar configuración', granted: false },
+                    { name: 'Eliminar datos', granted: false },
+                ],
+                visibleSections: [],
+                title: 'Analista (Personal)',
+            },
+            dba: {
+                permissions: [
+                    { name: 'Backup & Restore', granted: true },
+                    { name: 'Gestionar migraciones', granted: true },
+                    { name: 'Monitorear BD', granted: true },
+                    { name: 'Ver logs de sistema', granted: true },
+                    { name: 'Optimizar índices', granted: true },
+                    { name: 'Ver usuarios', granted: false },
+                    { name: 'Crear usuarios', granted: false },
+                    { name: 'Modificar datos', granted: false },
+                    { name: 'Acceso a aplicación', granted: false },
+                    { name: 'Gestionar permisos', granted: false },
+                ],
+                visibleSections: [],
+                title: 'Especialista BD (Mantenimiento)',
+            }
+        };
+
+        const auditLog = [
+            { action: 'LOGIN', user: 'admin_test', time: '2 min ago', details: 'Inicio de sesión exitoso' },
+            { action: 'PERMISSION_GRANTED', user: 'admin_test', time: '5 min ago', details: 'Permisos otorgados a supervisor_test' },
+            { action: 'USER_CREATED', user: 'admin_test', time: '10 min ago', details: 'Nuevo usuario creado: analyst_test' },
+            { action: 'RESOURCE_ACCESS', user: 'supervisor_test', time: '15 min ago', details: 'Acceso a PDF-12345 concedido' },
+            { action: 'AUDIT_LOG_VIEWED', user: 'dba_test', time: '20 min ago', details: 'Auditoría revisada' },
+            { action: 'CONFIG_CHANGED', user: 'admin_test', time: '25 min ago', details: 'OCR Provider cambiado a PaddleOCR' },
+        ];
+
+        function switchRole(newRole) {
+            // Update active button
+            document.querySelectorAll('.role-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-role="${newRole}"]`).classList.add('active');
+
+            // Update permissions
+            const data = roleData[newRole];
+            const permGrid = document.getElementById('permissions-grid');
+            permGrid.innerHTML = '';
+            
+            data.permissions.forEach(perm => {
+                const div = document.createElement('div');
+                div.className = `permission-item ${perm.granted ? 'granted' : 'denied'}`;
+                div.textContent = perm.name;
+                permGrid.appendChild(div);
+            });
+
+            // Show/hide sections
+            document.querySelectorAll('[id$="-section"]').forEach(section => {
+                section.classList.add('restricted');
+            });
+            
+            data.visibleSections.forEach(sectionId => {
+                document.getElementById(sectionId).classList.remove('restricted');
+            });
+
+            // Update title
+            document.querySelector('.header h1').textContent = `SIVAF - ${data.title}`;
+        }
+
+        function renderAuditLog() {
+            const auditLogDiv = document.getElementById('audit-log');
+            auditLogDiv.innerHTML = '';
+            
+            auditLog.forEach(entry => {
+                const div = document.createElement('div');
+                div.className = 'audit-entry';
+                div.innerHTML = `
+                    <div class="audit-action">${entry.action}</div>
+                    <div>Usuario: <strong>${entry.user}</strong> - ${entry.details}</div>
+                    <div class="audit-time">${entry.time}</div>
+                `;
+                auditLogDiv.appendChild(div);
+            });
+        }
+
+        // Event listeners
+        document.querySelectorAll('.role-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const role = btn.dataset.role;
+                switchRole(role);
+            });
+        });
+
+        // Initialize
+        switchRole('admin');
+        renderAuditLog();
+    </script>
+</body>
+</html>

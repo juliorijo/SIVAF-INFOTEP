@@ -24,7 +24,7 @@ from apps.api.permissions import (
     revoke_resource_access, log_audit_event,
     create_default_permissions, create_default_roles,
 )
-from apps.api.main import get_current_user, require_admin
+from apps.api.dependencies import get_current_user, require_admin, get_db
 from apps.api.schemas_phase2 import (
     UserCreate, UserUpdate, UserResponse, PermissionResponse,
     GrantPermissionRequest, RevokePermissionRequest, UserPermissionsResponse,
