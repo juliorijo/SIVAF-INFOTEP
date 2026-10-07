@@ -94,9 +94,24 @@ def startup_db() -> None:
     global ocr_provider
     init_db()
     ocr_provider = load_ocr_provider()
+    
+    # Inicializar permisos y roles por defecto (Fase 1)
+    from apps.api.permissions import create_default_permissions, create_default_roles
+    session = SessionLocal()
+    try:
+        create_default_permissions(session)
+        create_default_roles(session)
+    finally:
+        session.close()
 
 
 init_db()
+
+# ============================================================================
+# INCLUIR ROUTER DE FASE 2 (Permisos & Multi-usuario)
+# ============================================================================
+from apps.api.routes_phase2 import router as phase2_router
+app.include_router(phase2_router)
 
 
 class CreateJobRequest(BaseModel):
