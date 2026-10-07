@@ -11,6 +11,7 @@ const state = {
   evidenceObjectUrl: null, previewObjectUrl: null, previewPage: 1, previewPageCount: 0,
   user: null, actions: { items: [], total: 0, latest_import: null }, actionPage: 0,
   access: { users: [], permissions: [], teams: [] },
+  selectedAccessUserId: null,
 };
 let refreshTimer = null;
 const $ = (selector) => document.querySelector(selector);
@@ -66,6 +67,9 @@ function showDashboard(user) {
   $("#action-import-controls").hidden = user.role !== "admin";
   const canAccessControl = ["admin", "supervisor", "dba"].includes(user.role);
   $("#access-navigation").hidden = !canAccessControl;
+  const isAdmin = user.role === "admin";
+  $("#access-admin-users").hidden = !isAdmin;
+  $("#access-admin-permissions").hidden = !isAdmin;
   if (!canAccessControl && window.location.hash === "#access") {
     window.location.hash = "#dashboard";
   }
@@ -272,13 +276,14 @@ function renderAccessControlData() {
 
   const usersBody = $("#access-users-list");
   if (!users.length) {
-    usersBody.innerHTML = `<tr><td colspan="4" class="empty-state">No hay usuarios disponibles para este rol.</td></tr>`;
+    usersBody.innerHTML = `<tr><td colspan="5" class="empty-state">No hay usuarios disponibles para este rol.</td></tr>`;
   } else {
     usersBody.innerHTML = users.map((user) => `<tr>
       <td>${escapeHtml(user.username)}</td>
       <td>${escapeHtml(roleLabels[user.role] || user.role)}</td>
       <td>${escapeHtml(user.department || "—")}</td>
       <td>${escapeHtml(user.status || (user.is_active ? "active" : "inactive"))}</td>
+      <td><button class="text-button" data-access-user="${escapeHtml(user.id)}" type="button">Seleccionar</button></td>
     </tr>`).join("");
   }
 
@@ -293,6 +298,13 @@ function renderAccessControlData() {
   $("#teams-preview").innerHTML = teams.length
     ? teams.map((team) => `<div class="activity-item"><span class="activity-dot"></span><span><strong>${escapeHtml(team.name)}</strong><small>${escapeHtml(team.description || "Sin descripción")}</small></span></div>`).join("")
     : `<p class="muted">No hay equipos para mostrar.</p>`;
+
+  usersBody.querySelectorAll("[data-access-user]").forEach((button) => {
+    button.addEventListener("click", () => {
+      void selectAccessUser(button.dataset.accessUser);
+    });
+  });
+  fillAccessFormOptions();
 }
 
 async function loadAccessControlData() {
@@ -305,10 +317,220 @@ async function loadAccessControlData() {
     ]);
     state.access = { users, permissions, teams };
     renderAccessControlData();
+    if (state.selectedAccessUserId) {
+      await loadSelectedUserPermissions();
+    }
   } catch (error) {
     state.access = { users: [], permissions: [], teams: [] };
     renderAccessControlData();
     $("#access-note").textContent = `No tienes permiso para ver todos los datos de acceso: ${error.message}`;
+  }
+}
+
+function fillAccessFormOptions() {
+  const teams = state.access.teams || [];
+  const users = state.access.users || [];
+  const permissions = state.access.permissions || [];
+
+  const editTeamSelect = $("#edit-user-team");
+  const memberTeamSelect = $("#member-team-select");
+  const memberUserSelect = $("#member-user-select");
+  const grantPermissionSelect = $("#grant-permission-select");
+
+  const teamOptions = teams.map((team) => `<option value="${escapeHtml(team.id)}">${escapeHtml(team.name)}</option>`).join("");
+  editTeamSelect.innerHTML = `<option value="">Sin cambios</option>${teamOptions}`;
+  memberTeamSelect.innerHTML = `<option value="">Selecciona equipo</option>${teamOptions}`;
+
+  memberUserSelect.innerHTML = `<option value="">Selecciona usuario</option>${users.map((user) => (
+    `<option value="${escapeHtml(user.id)}">${escapeHtml(user.username)} · ${escapeHtml(roleLabels[user.role] || user.role)}</option>`
+  )).join("")}`;
+
+  grantPermissionSelect.innerHTML = `<option value="">Selecciona permiso</option>${permissions.map((permission) => (
+    `<option value="${escapeHtml(permission.id)}">${escapeHtml(permission.display_name || permission.name)}</option>`
+  )).join("")}`;
+}
+
+async function selectAccessUser(userId) {
+  state.selectedAccessUserId = userId;
+  const selectedUser = (state.access.users || []).find((user) => user.id === userId);
+  $("#selected-user-caption").textContent = selectedUser
+    ? `${selectedUser.username} · ${roleLabels[selectedUser.role] || selectedUser.role}`
+    : "Usuario seleccionado";
+  await loadSelectedUserPermissions();
+}
+
+async function loadSelectedUserPermissions() {
+  if (!state.selectedAccessUserId) {
+    $("#selected-user-permissions").innerHTML = `<p class="muted">Sin usuario seleccionado.</p>`;
+    return;
+  }
+  try {
+    const response = await api(`/api/v1/users/${encodeURIComponent(state.selectedAccessUserId)}/permissions`);
+    const permissionNames = response.permissions || [];
+    const permissionsByName = new Map((state.access.permissions || []).map((permission) => [permission.name, permission]));
+    if (!permissionNames.length) {
+      $("#selected-user-permissions").innerHTML = `<p class="muted">Este usuario no tiene permisos explícitos.</p>`;
+      return;
+    }
+    $("#selected-user-permissions").innerHTML = permissionNames.map((permissionName) => {
+      const permission = permissionsByName.get(permissionName);
+      const permissionId = permission?.id || "";
+      return `<div class="activity-item">
+        <span class="activity-dot"></span>
+        <span>
+          <strong>${escapeHtml(permission?.display_name || permissionName)}</strong>
+          <small>${escapeHtml(permissionName)}</small>
+        </span>
+        ${permissionId ? `<button class="text-button" data-revoke-permission="${escapeHtml(permissionId)}" type="button">Revocar</button>` : ""}
+      </div>`;
+    }).join("");
+    $("#selected-user-permissions").querySelectorAll("[data-revoke-permission]").forEach((button) => {
+      button.addEventListener("click", () => {
+        void revokeSelectedUserPermission(button.dataset.revokePermission);
+      });
+    });
+  } catch (error) {
+    $("#selected-user-permissions").innerHTML = `<p class="muted">No se pudieron cargar permisos: ${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function createAccessUser() {
+  const username = $("#new-user-username").value.trim().toLowerCase();
+  const password = $("#new-user-password").value;
+  const role = $("#new-user-role").value;
+  const department = $("#new-user-department").value.trim();
+  if (!username || !password || !role) {
+    toast("Completa usuario, contraseña y rol.");
+    return;
+  }
+  try {
+    await api("/api/v1/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, role, department: department || null }),
+    });
+    toast("Usuario creado.");
+    $("#new-user-username").value = "";
+    $("#new-user-password").value = "";
+    $("#new-user-department").value = "";
+    await loadAccessControlData();
+  } catch (error) {
+    toast(`No se pudo crear usuario: ${error.message}`);
+  }
+}
+
+async function updateSelectedAccessUser() {
+  if (!state.selectedAccessUserId) {
+    toast("Selecciona un usuario primero.");
+    return;
+  }
+  const payload = {};
+  const role = $("#edit-user-role").value;
+  const status = $("#edit-user-status").value;
+  const teamId = $("#edit-user-team").value;
+  if (role) payload.role = role;
+  if (status) payload.status = status;
+  if (teamId) payload.team_id = teamId;
+  if (!Object.keys(payload).length) {
+    toast("Selecciona al menos un cambio.");
+    return;
+  }
+  try {
+    await api(`/api/v1/users/${encodeURIComponent(state.selectedAccessUserId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    toast("Usuario actualizado.");
+    $("#edit-user-role").value = "";
+    $("#edit-user-status").value = "";
+    $("#edit-user-team").value = "";
+    await loadAccessControlData();
+  } catch (error) {
+    toast(`No se pudo actualizar usuario: ${error.message}`);
+  }
+}
+
+async function grantPermissionToSelectedUser() {
+  if (!state.selectedAccessUserId) {
+    toast("Selecciona un usuario primero.");
+    return;
+  }
+  const permissionId = $("#grant-permission-select").value;
+  if (!permissionId) {
+    toast("Selecciona un permiso.");
+    return;
+  }
+  try {
+    await api(`/api/v1/users/${encodeURIComponent(state.selectedAccessUserId)}/permissions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: state.selectedAccessUserId, permission_id: permissionId }),
+    });
+    toast("Permiso otorgado.");
+    $("#grant-permission-select").value = "";
+    await loadSelectedUserPermissions();
+  } catch (error) {
+    toast(`No se pudo otorgar permiso: ${error.message}`);
+  }
+}
+
+async function revokeSelectedUserPermission(permissionId) {
+  if (!state.selectedAccessUserId || !permissionId) {
+    toast("Selecciona usuario y permiso.");
+    return;
+  }
+  try {
+    await api(`/api/v1/users/${encodeURIComponent(state.selectedAccessUserId)}/permissions/${encodeURIComponent(permissionId)}`, {
+      method: "DELETE",
+    });
+    toast("Permiso revocado.");
+    await loadSelectedUserPermissions();
+  } catch (error) {
+    toast(`No se pudo revocar permiso: ${error.message}`);
+  }
+}
+
+async function createTeam() {
+  const name = $("#new-team-name").value.trim();
+  const description = $("#new-team-description").value.trim();
+  if (!name) {
+    toast("Escribe el nombre del equipo.");
+    return;
+  }
+  try {
+    await api("/api/v1/teams", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description: description || null }),
+    });
+    toast("Equipo creado.");
+    $("#new-team-name").value = "";
+    $("#new-team-description").value = "";
+    await loadAccessControlData();
+  } catch (error) {
+    toast(`No se pudo crear equipo: ${error.message}`);
+  }
+}
+
+async function addTeamMember() {
+  const teamId = $("#member-team-select").value;
+  const userId = $("#member-user-select").value;
+  const roleInTeam = $("#member-role-in-team").value;
+  if (!teamId || !userId) {
+    toast("Selecciona equipo y usuario.");
+    return;
+  }
+  try {
+    await api(`/api/v1/teams/${encodeURIComponent(teamId)}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, role_in_team: roleInTeam }),
+    });
+    toast("Miembro agregado al equipo.");
+    await loadAccessControlData();
+  } catch (error) {
+    toast(`No se pudo agregar el miembro: ${error.message}`);
   }
 }
 
@@ -688,6 +910,11 @@ $("#close-detail").addEventListener("click", () => $("#detail-dialog").close());
 $("#dismiss-notice").addEventListener("click", () => $(".notice-bar").remove());
 $("#login-form").addEventListener("submit", signIn);
 $("#logout-button").addEventListener("click", signOut);
+$("#create-user-button").addEventListener("click", () => { void createAccessUser(); });
+$("#update-user-button").addEventListener("click", () => { void updateSelectedAccessUser(); });
+$("#grant-permission-button").addEventListener("click", () => { void grantPermissionToSelectedUser(); });
+$("#create-team-button").addEventListener("click", () => { void createTeam(); });
+$("#add-team-member-button").addEventListener("click", () => { void addTeamMember(); });
 window.addEventListener("hashchange", renderRoute);
 
 async function initialize() {

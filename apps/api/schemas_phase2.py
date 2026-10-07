@@ -203,9 +203,9 @@ class DashboardResponse(BaseModel):
     role: str
     stats: DashboardStats
     recent_jobs: List[JobSummary]
-    teams: Optional[List[TeamResponse]]
-    users: Optional[List[UserResponse]]
-    audit_entries: Optional[List[AuditLogResponse]]
+    teams: Optional[List[TeamResponse]] = None
+    users: Optional[List[UserResponse]] = None
+    audit_entries: Optional[List[AuditLogResponse]] = None
 
 
 # ============================================================================

@@ -9,3 +9,5 @@ pypdfium2>=4.30,<6
 pytesseract>=0.3.13,<0.4
 Pillow>=11,<13
 openpyxl>=3.1,<4
+# Optional: better OCR quality for scanned documents
+paddleocr>=2.8,<3

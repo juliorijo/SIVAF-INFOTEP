@@ -65,7 +65,7 @@
             <article class="stat-card"><div class="stat-top"><span>No verificables</span><span class="stat-icon gray">?</span></div><strong id="stat-unverifiable">—</strong><small>Requieren datos/OCR legibles</small></article>
             <article class="stat-card"><div class="stat-top"><span>Procesamiento finalizado</span><span class="stat-icon green">✓</span></div><strong id="stat-complete">—</strong><small>No implica aprobación institucional</small></article>
           </section>
-          <section class="content-grid dashboard-panels">
+          <section class="content-grid dashboard-panels" id="access-admin-users">
             <aside class="panel activity-panel">
               <div class="panel-heading"><div><h2>Revisión humana</h2><p>Atención requerida</p></div><span class="round-icon">◉</span></div>
               <div class="review-empty"><span class="review-illustration">✓</span><strong id="review-title">Todo al día</strong><p id="review-description">Cuando un PDF requiera revisión, aparecerá aquí.</p></div>
@@ -113,9 +113,9 @@
           <section class="notice-bar"><span class="notice-symbol">i</span><p id="access-note">Vista de administración de acceso por roles.</p></section>
           <div class="panel jobs-panel">
             <div class="panel-heading"><div><h2>Resumen de acceso</h2><p id="access-summary">Cargando…</p></div></div>
-            <div class="table-wrap"><table><thead><tr><th>USUARIO</th><th>ROL</th><th>DEPARTAMENTO</th><th>ESTADO</th></tr></thead><tbody id="access-users-list"><tr><td colspan="4" class="empty-state">Cargando usuarios…</td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>USUARIO</th><th>ROL</th><th>DEPARTAMENTO</th><th>ESTADO</th><th>ACCIONES</th></tr></thead><tbody id="access-users-list"><tr><td colspan="5" class="empty-state">Cargando usuarios…</td></tr></tbody></table></div>
           </div>
-          <section class="content-grid dashboard-panels">
+          <section class="content-grid dashboard-panels" id="access-admin-permissions">
             <aside class="panel activity-panel">
               <div class="panel-heading"><div><h2>Permisos disponibles</h2><p id="permissions-total">Cargando permisos…</p></div></div>
               <div id="permissions-preview" class="activity-list"><p class="muted">Sin datos.</p></div>
@@ -123,6 +123,81 @@
             <aside class="panel activity-panel">
               <div class="panel-heading"><div><h2>Equipos</h2><p id="teams-total">Cargando equipos…</p></div></div>
               <div id="teams-preview" class="activity-list"><p class="muted">Sin datos.</p></div>
+            </aside>
+          </section>
+          <section class="content-grid dashboard-panels">
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Crear usuario</h2><p>Solo administración</p></div></div>
+              <div class="review-form">
+                <label for="new-user-username">Usuario</label>
+                <input id="new-user-username" type="text" maxlength="80" autocomplete="off">
+                <label for="new-user-password">Contraseña (mín. 12)</label>
+                <input id="new-user-password" type="password" maxlength="1024" autocomplete="off">
+                <label for="new-user-role">Rol</label>
+                <select id="new-user-role">
+                  <option value="analyst">Analista</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="dba">DBA</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <label for="new-user-department">Departamento</label>
+                <input id="new-user-department" type="text" maxlength="120" autocomplete="off">
+                <button class="button button-secondary" id="create-user-button" type="button">Crear usuario</button>
+              </div>
+            </aside>
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Editar usuario seleccionado</h2><p id="selected-user-caption">Selecciona un usuario en la tabla</p></div></div>
+              <div class="review-form">
+                <label for="edit-user-role">Rol</label>
+                <select id="edit-user-role">
+                  <option value="">Sin cambios</option>
+                  <option value="analyst">Analista</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="dba">DBA</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <label for="edit-user-status">Estado</label>
+                <select id="edit-user-status">
+                  <option value="">Sin cambios</option>
+                  <option value="active">active</option>
+                  <option value="suspended">suspended</option>
+                  <option value="inactive">inactive</option>
+                </select>
+                <label for="edit-user-team">Equipo</label>
+                <select id="edit-user-team"><option value="">Sin cambios</option></select>
+                <button class="button button-secondary" id="update-user-button" type="button">Guardar cambios</button>
+              </div>
+            </aside>
+          </section>
+          <section class="content-grid dashboard-panels">
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Permisos del usuario seleccionado</h2><p>Otorgar / revocar permisos directos</p></div></div>
+              <div class="review-form">
+                <label for="grant-permission-select">Permiso disponible</label>
+                <select id="grant-permission-select"><option value="">Selecciona permiso</option></select>
+                <button class="button button-secondary" id="grant-permission-button" type="button">Otorgar permiso</button>
+                <div id="selected-user-permissions" class="activity-list"><p class="muted">Sin usuario seleccionado.</p></div>
+              </div>
+            </aside>
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Crear equipo y asignar miembro</h2><p>Gestión rápida de equipos</p></div></div>
+              <div class="review-form">
+                <label for="new-team-name">Nombre del equipo</label>
+                <input id="new-team-name" type="text" maxlength="255" autocomplete="off">
+                <label for="new-team-description">Descripción</label>
+                <input id="new-team-description" type="text" maxlength="255" autocomplete="off">
+                <button class="button button-secondary" id="create-team-button" type="button">Crear equipo</button>
+                <label for="member-team-select">Equipo</label>
+                <select id="member-team-select"><option value="">Selecciona equipo</option></select>
+                <label for="member-user-select">Usuario</label>
+                <select id="member-user-select"><option value="">Selecciona usuario</option></select>
+                <label for="member-role-in-team">Rol en equipo</label>
+                <select id="member-role-in-team">
+                  <option value="member">member</option>
+                  <option value="lead">lead</option>
+                </select>
+                <button class="button button-secondary" id="add-team-member-button" type="button">Agregar miembro</button>
+              </div>
             </aside>
           </section>
         </section>
