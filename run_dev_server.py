@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Cargar variables de entorno
 env_file = Path(__file__).parent / '.env.local'
 if env_file.exists():
-    load_dotenv(env_file)
+    load_dotenv(env_file, override=True)
 else:
     load_dotenv()
 

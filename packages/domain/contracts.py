@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 from uuid import UUID
 
 from .enums import ResultOutcome
@@ -31,7 +31,11 @@ class OCRDocumentText:
 
 class OCRProvider(ABC):
     @abstractmethod
-    def extract_text(self, pdf_path: str) -> OCRDocumentText:
+    def extract_text(
+        self,
+        pdf_path: str,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> OCRDocumentText:
         raise NotImplementedError
 
     @abstractmethod

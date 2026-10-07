@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import secrets
 import tempfile
+import time
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -107,6 +108,19 @@ class ApiSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201)
         return response.json()
+
+    def _wait_for_job_terminal(self, client: TestClient, job_id: str, timeout_seconds: float = 8.0):
+        deadline = time.time() + timeout_seconds
+        last_status = None
+        while time.time() < deadline:
+            response = client.get(f"/api/v1/jobs/{job_id}")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            last_status = payload["status"]
+            if last_status in {"REQUIRES_REVIEW", "COMPLETED", "FAILED"}:
+                return payload
+            time.sleep(0.05)
+        self.fail(f"Job {job_id} did not reach a terminal state. Last status: {last_status}")
 
     def test_health(self):
         response = self.client.get("/health")
@@ -296,10 +310,12 @@ class ApiSmokeTests(unittest.TestCase):
 
     def test_start_processing(self):
         job_id = self._upload_pdf("proceso.pdf")["id"]
+        self._wait_for_job_terminal(self.client, job_id)
 
         response = self.client.post(f"/api/v1/jobs/{job_id}/process", json={"force": True})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["status"], "REQUIRES_REVIEW")
+        self.assertEqual(response.json()["status"], "PROCESSING")
+        self._wait_for_job_terminal(self.client, job_id)
 
     def test_human_review_is_persisted_and_audited(self):
         job_id = self._upload_pdf("revision.pdf")["id"]
@@ -345,6 +361,8 @@ class ApiSmokeTests(unittest.TestCase):
         processed = self.client.post(f"/api/v1/jobs/{job_id}/process", json={"force": True})
 
         self.assertEqual(processed.status_code, 200)
+        self.assertEqual(processed.json()["status"], "PROCESSING")
+        self._wait_for_job_terminal(self.client, job_id)
         self.assertIsNone(self.client.get(f"/api/v1/jobs/{job_id}/review").json())
         audit = self.client.get(f"/api/v1/jobs/{job_id}/audit").json()
         self.assertIn("HUMAN_REVIEW_INVALIDATED_BY_REPROCESS", [event["action"] for event in audit])
@@ -412,6 +430,88 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertIn("EVIDENCE_PDF_REQUESTED", actions)
         self.assertIn("EVIDENCE_PREVIEW_GENERATED", actions)
 
+    def test_relations_are_personal_for_non_admin_and_include_returned_print_data(self):
+        own_job = self._upload_pdf("propio-devuelto.pdf")["id"]
+        reviewed = self.client.put(
+            f"/api/v1/jobs/{own_job}/review",
+            json={"final_status": "DEVUELTA", "comments": "Corregir participantes"},
+        )
+        self.assertEqual(reviewed.status_code, 200)
+
+        other = TestClient(app)
+        login = other.post(
+            "/api/v1/auth/login",
+            json={"username": self.other_username, "password": self.other_password},
+        )
+        self.assertEqual(login.status_code, 200)
+        other_job = other.post(
+            "/api/v1/jobs/upload",
+            files={"file": ("otro-devuelto.pdf", self._make_pdf_bytes(), "application/pdf")},
+        ).json()["id"]
+        other.put(
+            f"/api/v1/jobs/{other_job}/review",
+            json={"final_status": "DEVUELTA", "comments": "Actualizar información"},
+        )
+
+        relation_list = self.client.get("/api/v1/relations")
+        self.assertEqual(relation_list.status_code, 200)
+        own_ids = {item["job_id"] for item in relation_list.json()["items"]}
+        self.assertIn(own_job, own_ids)
+        self.assertNotIn(other_job, own_ids)
+
+        with SessionLocal() as session:
+            other_user = session.scalar(select(UserORM).where(UserORM.username == self.other_username))
+            self.assertIsNotNone(other_user)
+            forbidden = self.client.get("/api/v1/relations", params={"owner_id": other_user.id})
+            self.assertEqual(forbidden.status_code, 403)
+
+        returned = self.client.get("/api/v1/relations/returned")
+        self.assertEqual(returned.status_code, 200)
+        returned_ids = {item["job_id"] for item in returned.json()["items"]}
+        self.assertIn(own_job, returned_ids)
+        self.assertNotIn(other_job, returned_ids)
+
+        print_data = self.client.get(f"/api/v1/relations/returned/{own_job}/print")
+        self.assertEqual(print_data.status_code, 200)
+        self.assertEqual(print_data.json()["codigo_accion_formativa"], "—")
+        self.assertEqual(
+            self.client.get(f"/api/v1/relations/returned/{other_job}/print").status_code,
+            404,
+        )
+
+    def test_admin_can_see_all_relations_and_filter_by_user(self):
+        own_job = self._upload_pdf("admin-scope-own.pdf")["id"]
+        self.client.put(f"/api/v1/jobs/{own_job}/review", json={"final_status": "DEVUELTA"})
+        other = TestClient(app)
+        other.post(
+            "/api/v1/auth/login",
+            json={"username": self.other_username, "password": self.other_password},
+        )
+        other_job = other.post(
+            "/api/v1/jobs/upload",
+            files={"file": ("admin-scope-other.pdf", self._make_pdf_bytes(), "application/pdf")},
+        ).json()["id"]
+        other.put(f"/api/v1/jobs/{other_job}/review", json={"final_status": "DEVUELTA"})
+
+        admin = TestClient(app)
+        admin.post(
+            "/api/v1/auth/login",
+            json={"username": self.admin_username, "password": self.admin_password},
+        )
+        all_relations = admin.get("/api/v1/relations")
+        self.assertEqual(all_relations.status_code, 200)
+        admin_ids = {item["job_id"] for item in all_relations.json()["items"]}
+        self.assertIn(own_job, admin_ids)
+        self.assertIn(other_job, admin_ids)
+
+        with SessionLocal() as session:
+            owner = session.scalar(select(UserORM).where(UserORM.username == self.other_username))
+            self.assertIsNotNone(owner)
+            filtered = admin.get("/api/v1/relations", params={"owner_id": owner.id})
+            self.assertEqual(filtered.status_code, 200)
+            filtered_ids = {item["job_id"] for item in filtered.json()["items"]}
+            self.assertIn(other_job, filtered_ids)
+            self.assertNotIn(own_job, filtered_ids)
 
 if __name__ == "__main__":
     unittest.main()

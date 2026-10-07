@@ -3,8 +3,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from packages.shared.normalization import normalize_document_number
-from packages.validation.dominican_cedula import is_dominican_cedula_checksum_valid
+from packages.validation.dominican_cedula import (
+    is_dominican_cedula_checksum_valid,
+    normalize_dominican_cedula_candidate,
+)
 
 
 @dataclass(frozen=True)
@@ -19,8 +21,8 @@ def assess_cedula_pair(
     document_value: str,
     visual_identity_confirmed: bool,
 ) -> CedulaVerificationAssessment:
-    roster_number = normalize_document_number(roster_value)
-    document_number = normalize_document_number(document_value)
+    roster_number = normalize_dominican_cedula_candidate(roster_value)
+    document_number = normalize_dominican_cedula_candidate(document_value)
     if (
         roster_number is None
         or document_number is None

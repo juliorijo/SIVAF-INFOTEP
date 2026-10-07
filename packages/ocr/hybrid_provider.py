@@ -27,6 +27,7 @@ class HybridOCRProvider(OCRProvider):
         self.paddle_enabled = os.getenv("OCR_USE_PADDLE", "true").lower() != "false"
         self.paddle_min_confidence = float(os.getenv("PADDLE_MIN_CONFIDENCE", "0.72"))
         self.dpi = int(os.getenv("PADDLE_DPI", os.getenv("TESSERACT_DPI", "260")))
+        self.max_pages = int(os.getenv("OCR_MAX_PAGES", "0"))
 
         self._paddle = None
         if self.paddle_enabled and PaddleOCR is not None:
@@ -39,10 +40,14 @@ class HybridOCRProvider(OCRProvider):
 
         self._tesseract = TesseractOCRProvider()
 
-    def extract_text(self, pdf_path: str) -> OCRDocumentText:
+    def extract_text(self, pdf_path: str, progress_callback=None) -> OCRDocumentText:
         pages: list[OCRPageText] = []
         with pdfium.PdfDocument(pdf_path) as document:
+            total_pages = len(document)
             for page_number, page in enumerate(document, start=1):
+                if self.max_pages > 0 and page_number > self.max_pages:
+                    page.close()
+                    break
                 bitmap = page.render(scale=self.dpi / 72)
                 with bitmap.to_pil() as image:
                     text, confidence, source = self._read_page_hybrid(image)
@@ -53,6 +58,8 @@ class HybridOCRProvider(OCRProvider):
                         confidence=confidence,
                     )
                 )
+                if progress_callback is not None and total_pages > 0:
+                    progress_callback(page_number, total_pages)
                 bitmap.close()
                 page.close()
 

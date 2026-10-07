@@ -13,9 +13,9 @@ import time
 import unicodedata
 from zipfile import BadZipFile
 from typing import Any, Dict, List
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import pypdfium2 as pdfium
@@ -42,10 +42,12 @@ from packages.document_processing.pdf_service import (
     PdfUploadLimitError,
 )
 from packages.domain.enums import JobStatus, ResultOutcome, RuleCode
+from packages.ocr.ai_assisted_analyzer import AIAssistedOCRAnalyzer, create_ai_assisted_analyzer
 from packages.ocr.registry import load_ocr_provider
-from packages.shared.normalization import normalize_document_number
-from packages.validation.dominican_cedula import is_dominican_cedula_checksum_valid
-from packages.validation.cedula_verification import assess_cedula_pair
+from packages.validation.dominican_cedula import (
+    is_dominican_cedula_checksum_valid,
+    normalize_dominican_cedula_candidate,
+)
 
 app = FastAPI(
     title="SIVAF | Sistema de Verificación de Acciones Formativas",
@@ -67,6 +69,9 @@ app.add_middleware(
 
 pdf_service = PdfIngestionService()
 ocr_provider = None
+ocr_provider_diagnostic = ""
+ai_ocr_analyzer: AIAssistedOCRAnalyzer | None = None
+ai_ocr_diagnostic = ""
 AUTH_COOKIE_NAME = "sivaf_session"
 AUTH_SESSION_SECONDS = 8 * 60 * 60
 AUTH_COOKIE_SECURE = os.getenv("SIVAF_COOKIE_SECURE", "false").lower() == "true"
@@ -89,11 +94,50 @@ ACTION_FIELD_ALIASES = {
 }
 
 
+def load_local_env_file() -> None:
+    for filename in (".env", ".env.local"):
+        env_path = Path(__file__).resolve().parents[2] / filename
+        if not env_path.is_file():
+            continue
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key:
+                os.environ[key] = value
+
+
 @app.on_event("startup")
 def startup_db() -> None:
-    global ocr_provider
+    global ai_ocr_analyzer, ai_ocr_diagnostic, ocr_provider, ocr_provider_diagnostic
+    load_local_env_file()
     init_db()
-    ocr_provider = load_ocr_provider()
+    try:
+        ocr_provider = load_ocr_provider()
+        if ocr_provider is None:
+            ocr_provider_diagnostic = (
+                "No se encontró un motor OCR local disponible. "
+                "Instala Tesseract OCR y define TESSERACT_CMD o configura OCR_PROVIDER_FACTORY."
+            )
+        else:
+            ocr_provider_diagnostic = ""
+    except Exception as exc:
+        ocr_provider = None
+        ocr_provider_diagnostic = f"Error de configuración OCR: {exc}"
+    try:
+        ai_ocr_analyzer = create_ai_assisted_analyzer()
+        if ai_ocr_analyzer.is_configured():
+            ai_ocr_diagnostic = ""
+        else:
+            ai_ocr_diagnostic = (
+                "AI OCR deshabilitado: define AI_OCR_BASE_URL y AI_OCR_MODEL para activar la revisión asistida."
+            )
+    except Exception as exc:
+        ai_ocr_analyzer = None
+        ai_ocr_diagnostic = f"Error de configuración AI OCR: {exc}"
     
     # Inicializar permisos y roles por defecto (Fase 1)
     from apps.api.permissions import create_default_permissions, create_default_roles
@@ -127,15 +171,6 @@ class ProcessJobRequest(BaseModel):
 class HumanReviewRequest(BaseModel):
     comments: str = Field(default="", max_length=4000)
     final_status: str | None = Field(default=None)
-
-
-class CedulaVerificationRequest(BaseModel):
-    participant_reference: str = Field(..., min_length=1, max_length=32)
-    roster_page: int = Field(..., ge=1)
-    document_page: int = Field(..., ge=1)
-    roster_cedula: str = Field(..., min_length=1, max_length=32)
-    document_cedula: str = Field(..., min_length=1, max_length=32)
-    visual_identity_confirmed: bool = False
 
 
 class LoginRequest(BaseModel):
@@ -392,7 +427,25 @@ def serialize_validation_result(row: ValidationResultORM) -> Dict[str, Any]:
 
 
 def find_cedula_candidates(text: str) -> list[str]:
-    return sorted(set(re.findall(r"(?<!\d)\d{3}[-\s]?\d{7}[-\s]?\d(?!\d)", text)))
+    if not text:
+        return []
+    pattern = re.compile(
+        r"(?<![A-Z0-9])(?:[0-9OQDILSBGZ]{3}[\s\-.:_/,;]*[0-9OQDILSBGZ]{7}[\s\-.:_/,;]*[0-9OQDILSBGZ]|[0-9OQDILSBGZ]{11})(?![A-Z0-9])",
+        re.IGNORECASE,
+    )
+    candidates = {
+        normalized
+        for raw_match in pattern.findall(text.upper())
+        if (normalized := normalize_dominican_cedula_candidate(raw_match))
+    }
+    return sorted(candidates)
+
+
+def mask_cedula_candidate(number: str) -> str:
+    compact = re.sub(r"\D", "", number or "")
+    if len(compact) != 11:
+        return "***"
+    return f"***-*******-{compact[-1]} · ****{compact[-4:]}"
 
 
 def summarize_document_candidates(pages) -> Dict[str, Any]:
@@ -405,13 +458,10 @@ def summarize_document_candidates(pages) -> Dict[str, Any]:
     evidence_checksum_valid_numbers: set[str] = set()
     roster_checksum_invalid_numbers: set[str] = set()
     evidence_checksum_invalid_numbers: set[str] = set()
+    candidate_profiles: dict[str, Dict[str, Any]] = {}
 
     for page in pages:
-        numbers = {
-            normalized
-            for candidate in find_cedula_candidates(page.text)
-            if (normalized := normalize_document_number(candidate))
-        }
+        numbers = set(find_cedula_candidates(page.text))
         if not numbers:
             continue
 
@@ -428,27 +478,89 @@ def summarize_document_candidates(pages) -> Dict[str, Any]:
         if is_roster_page:
             roster_by_page[page.page_number] = numbers
             for number in numbers:
+                profile = candidate_profiles.setdefault(number, {
+                    "roster_pages": set(),
+                    "document_pages": set(),
+                    "roster_confident": False,
+                    "document_confident": False,
+                    "document_low_confidence": False,
+                })
+                profile["roster_pages"].add(page.page_number)
                 if is_dominican_cedula_checksum_valid(number):
                     roster_checksum_valid_numbers.add(number)
                     if page.confidence is not None and page.confidence >= 0.8:
                         confident_roster_numbers.add(number)
+                        profile["roster_confident"] = True
                 else:
                     roster_checksum_invalid_numbers.add(number)
         else:
             evidence_by_page[page.page_number] = numbers
             for number in numbers:
+                profile = candidate_profiles.setdefault(number, {
+                    "roster_pages": set(),
+                    "document_pages": set(),
+                    "roster_confident": False,
+                    "document_confident": False,
+                    "document_low_confidence": False,
+                })
+                profile["document_pages"].add(page.page_number)
                 if is_dominican_cedula_checksum_valid(number):
                     evidence_checksum_valid_numbers.add(number)
                     if page.confidence is not None and page.confidence >= 0.8:
                         confident_evidence_numbers.add(number)
+                        profile["document_confident"] = True
                 else:
                     evidence_checksum_invalid_numbers.add(number)
             if page.confidence is None or page.confidence < 0.8:
                 low_confidence_evidence_candidates.update(numbers)
+                for number in numbers:
+                    profile = candidate_profiles.setdefault(number, {
+                        "roster_pages": set(),
+                        "document_pages": set(),
+                        "roster_confident": False,
+                        "document_confident": False,
+                        "document_low_confidence": False,
+                    })
+                    profile["document_low_confidence"] = True
 
     roster_numbers = set().union(*roster_by_page.values()) if roster_by_page else set()
     evidence_numbers = set().union(*evidence_by_page.values()) if evidence_by_page else set()
     confident_matches = confident_roster_numbers & confident_evidence_numbers
+    all_candidates = sorted(roster_numbers | evidence_numbers)
+    participant_review_items: list[Dict[str, Any]] = []
+    for index, number in enumerate(all_candidates, start=1):
+        profile = candidate_profiles.get(number, {})
+        roster_pages = sorted(profile.get("roster_pages", set()))
+        document_pages = sorted(profile.get("document_pages", set()))
+        roster_confident = bool(profile.get("roster_confident"))
+        document_confident = bool(profile.get("document_confident"))
+        checksum_valid = is_dominican_cedula_checksum_valid(number)
+        if not checksum_valid:
+            review_status = "REQUIERE_REVISION"
+            review_reason = "Dígito de control no coincide."
+        elif roster_confident and document_confident:
+            review_status = "OK_AUTOMATICO"
+            review_reason = "Coincidencia OCR confiable entre lista y documento."
+        elif roster_confident and not document_confident:
+            review_status = "REQUIERE_REVISION"
+            review_reason = "No se encontró coincidencia confiable en páginas de documento."
+        elif not roster_confident and document_confident:
+            review_status = "REQUIERE_REVISION"
+            review_reason = "Detectado en documento, pero no en lista con confianza alta."
+        else:
+            review_status = "REQUIERE_REVISION"
+            review_reason = "Lectura OCR de baja confianza; validar manualmente."
+        participant_review_items.append({
+            "reference": f"P-{index:03d}",
+            "cedula_masked": mask_cedula_candidate(number),
+            "review_status": review_status,
+            "review_reason": review_reason,
+            "roster_pages": roster_pages,
+            "document_pages": document_pages,
+            "roster_sheets": sorted({(page + 1) // 2 for page in roster_pages}),
+            "document_sheets": sorted({(page + 1) // 2 for page in document_pages}),
+            "document_low_confidence": bool(profile.get("document_low_confidence")),
+        })
     return {
         "cedula_candidate_count": len(roster_numbers | evidence_numbers),
         "cedula_candidate_pages": sorted(roster_by_page.keys() | evidence_by_page.keys()),
@@ -468,6 +580,13 @@ def summarize_document_candidates(pages) -> Dict[str, Any]:
         "low_confidence_evidence_candidates": len(low_confidence_evidence_candidates),
         "verified_identities": 0,
         "identity_association_requires_human_review": True,
+        "participant_review_items": participant_review_items,
+        "participants_requiring_review_count": sum(
+            item["review_status"] == "REQUIERE_REVISION" for item in participant_review_items
+        ),
+        "participants_ok_automatic_count": sum(
+            item["review_status"] == "OK_AUTOMATICO" for item in participant_review_items
+        ),
     }
 
 
@@ -481,6 +600,354 @@ def sanitize_json(value: Any) -> Any:
     if isinstance(value, set):
         return [sanitize_json(item) for item in value]
     return value
+
+
+def resolve_relation_owner_ids(session, current_user: UserORM, owner_id: str | None) -> list[str]:
+    if current_user.role == "admin":
+        if owner_id:
+            owner_exists = session.scalar(select(UserORM.id).where(UserORM.id == owner_id))
+            if owner_exists is None:
+                raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+            return [owner_id]
+        return [user_id for user_id in session.scalars(select(UserORM.id)).all()]
+
+    if owner_id and owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No tienes permiso para ver relaciones de otros usuarios.")
+    return [current_user.id]
+
+
+def build_relation_records(
+    session,
+    rows: list[tuple[ProcessingJobORM, HumanReviewORM | None]],
+) -> list[Dict[str, Any]]:
+    creator_ids = {job.created_by for job, _ in rows if job.created_by}
+    creators = {
+        user.id: user.username
+        for user in session.scalars(select(UserORM).where(UserORM.id.in_(creator_ids))).all()
+    } if creator_ids else {}
+
+    action_codes = {
+        (job.payload_metadata or {}).get("action_code")
+        for job, _ in rows
+        if (job.payload_metadata or {}).get("action_code")
+    }
+    action_names = {
+        row.action_code: row.name
+        for row in session.scalars(
+            select(FormativeActionORM).where(FormativeActionORM.action_code.in_(action_codes))
+        ).all()
+    } if action_codes else {}
+
+    relations: list[Dict[str, Any]] = []
+    for job, review in rows:
+        metadata = job.payload_metadata or {}
+        action_code = metadata.get("action_code")
+        relations.append({
+            "job_id": job.id,
+            "source_pdf_name": Path(job.source_pdf_path).name,
+            "created_by": job.created_by,
+            "created_by_username": creators.get(job.created_by or "", "—"),
+            "status": job.status,
+            "queued_at": job.queued_at.isoformat() if job.queued_at else None,
+            "action_code": action_code,
+            "action_name": action_names.get(action_code, "—"),
+            "participant_count": metadata.get("roster_candidate_count") or metadata.get("cedula_candidate_count") or 0,
+            "review": {
+                "reviewer": review.reviewer,
+                "comments": review.comments,
+                "final_status": review.final_status,
+                "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
+            } if review else None,
+        })
+    return relations
+
+
+def set_processing_progress(
+    row: ProcessingJobORM,
+    percent: int,
+    stage: str,
+    message: str,
+) -> None:
+    metadata = dict(row.payload_metadata or {})
+    metadata["processing_progress_percent"] = max(0, min(100, int(percent)))
+    metadata["processing_stage"] = stage
+    metadata["processing_message"] = message
+    if percent >= 100:
+        metadata["processing_finished_at"] = datetime.now(timezone.utc).isoformat()
+    elif "processing_finished_at" in metadata:
+        metadata.pop("processing_finished_at", None)
+    row.payload_metadata = sanitize_json(metadata)
+
+
+def persist_processing_progress(
+    job_id: str,
+    percent: int,
+    stage: str,
+    message: str,
+) -> None:
+    with SessionLocal() as session:
+        row = session.get(ProcessingJobORM, job_id)
+        if row is None:
+            return
+        set_processing_progress(row, percent, stage, message)
+        session.commit()
+
+
+async def process_job_in_background(
+    job_id: str,
+    actor_username: str,
+    force: bool = False,
+    request_metadata: Dict[str, Any] | None = None,
+) -> None:
+    request_metadata = request_metadata or {}
+    with SessionLocal() as session:
+        row = session.get(ProcessingJobORM, job_id)
+        if row is None:
+            return
+        row.status = JobStatus.PROCESSING.value
+        row.started_at = datetime.now(timezone.utc)
+        row.finished_at = None
+        set_processing_progress(row, 5, "initializing", "Iniciando revisión automática.")
+        session.commit()
+
+        previous_review = session.get(HumanReviewORM, job_id)
+        if previous_review is not None:
+            reviewed_at = datetime.now(timezone.utc)
+            session.add(AuditEventORM(
+                id=str(uuid4()),
+                job_id=job_id,
+                actor=actor_username,
+                action="HUMAN_REVIEW_INVALIDATED_BY_REPROCESS",
+                details=sanitize_json({
+                    "previous_reviewer": previous_review.reviewer,
+                    "previous_final_status": previous_review.final_status,
+                }),
+                created_at=reviewed_at,
+            ))
+            session.delete(previous_review)
+            session.commit()
+
+        previous_verifications = session.scalars(
+            select(ValidationResultORM).where(
+                ValidationResultORM.job_id == job_id,
+                ValidationResultORM.participant_id.is_not(None),
+            )
+        ).all()
+        if previous_verifications:
+            session.add(AuditEventORM(
+                id=str(uuid4()),
+                job_id=job_id,
+                actor=actor_username,
+                action="CEDULA_VERIFICATIONS_INVALIDATED_BY_REPROCESS",
+                details={"invalidated_count": len(previous_verifications)},
+                created_at=datetime.now(timezone.utc),
+            ))
+            for verification in previous_verifications:
+                session.delete(verification)
+            session.commit()
+
+        try:
+            set_processing_progress(row, 20, "reading_pdf", "Leyendo PDF y metadatos.")
+            session.commit()
+
+            pdf_metadata: Dict[str, Any] = {}
+            pdf_text_source = "source_unavailable"
+            text_extraction = None
+            if row.source_pdf_path and is_managed_evidence_available(row.source_pdf_path):
+                pdf_metadata = pdf_service.inspect_existing_pdf(row.source_pdf_path)
+                persist_processing_progress(job_id, 45, "ocr", "Ejecutando OCR y extracción de texto.")
+                ocr_last_saved_percent = 45
+
+                def ocr_progress_callback(page_number: int, total_pages: int) -> None:
+                    nonlocal ocr_last_saved_percent
+                    if total_pages <= 0:
+                        return
+                    percent = 45 + int((page_number / total_pages) * 20)
+                    if percent <= ocr_last_saved_percent and percent < 100:
+                        return
+                    ocr_last_saved_percent = percent
+                    persist_processing_progress(
+                        job_id,
+                        percent,
+                        "ocr",
+                        f"Ejecutando OCR y extracción de texto ({page_number}/{total_pages}).",
+                    )
+
+                text_extraction = await run_in_threadpool(
+                    pdf_service.extract_text,
+                    row.source_pdf_path,
+                    ocr_provider,
+                    ocr_progress_callback,
+                )
+                pdf_text_source = text_extraction.source
+
+            persist_processing_progress(job_id, 70, "analyzing", "Analizando candidatos y reglas.")
+            candidate_summary = summarize_document_candidates(
+                text_extraction.pages if text_extraction else []
+            )
+            participant_review_items = candidate_summary.get("participant_review_items", [])
+            ai_review = None
+            if ai_ocr_analyzer is not None and ai_ocr_analyzer.is_configured() and text_extraction is not None:
+                candidate_pages = sorted(
+                    set(
+                        candidate_summary.get("roster_candidate_pages", [])
+                        + candidate_summary.get("evidence_candidate_pages", [])
+                    )
+                )
+                persist_processing_progress(job_id, 75, "ai_analysis", "Analizando resultados con IA asistida.")
+                try:
+                    ai_review = await run_in_threadpool(
+                        ai_ocr_analyzer.analyze,
+                        text_extraction,
+                        focus_pages=candidate_pages or None,
+                        participant_hints=participant_review_items,
+                        action_code=pdf_metadata.get("action_code"),
+                    )
+                except Exception as exc:
+                    candidate_summary["ai_ocr_enabled"] = False
+                    candidate_summary["ai_ocr_error"] = str(exc)
+                    candidate_summary["ai_ocr_warnings"] = [f"AI OCR no disponible: {exc}"]
+                    persist_processing_progress(
+                        job_id,
+                        78,
+                        "ai_analysis",
+                        f"AI OCR no disponible para este documento: {exc}",
+                    )
+                else:
+                    if ai_review is not None:
+                        participant_review_items = ai_review.participant_items or participant_review_items
+                        candidate_summary["ai_ocr_enabled"] = True
+                        candidate_summary["ai_ocr_provider"] = ai_review.provider
+                        candidate_summary["ai_ocr_model"] = ai_review.model
+                        candidate_summary["ai_ocr_summary"] = ai_review.summary
+                        candidate_summary["ai_ocr_confidence"] = ai_review.confidence
+                        candidate_summary["ai_ocr_warnings"] = ai_review.warnings or []
+                        candidate_summary["ai_participant_items"] = ai_review.participant_items
+                        candidate_summary["participant_review_items"] = participant_review_items
+                        candidate_summary["participants_requiring_review_count"] = sum(
+                            item.get("review_status") == "REQUIERE_REVISION" for item in participant_review_items
+                        )
+                        candidate_summary["participants_ok_automatic_count"] = sum(
+                            item.get("review_status") == "OK_AUTOMATICO" for item in participant_review_items
+                        )
+                    persist_processing_progress(job_id, 82, "ai_analysis", "IA asistida aplicada al documento.")
+            else:
+                candidate_summary["ai_ocr_enabled"] = False
+                candidate_summary["ai_ocr_warnings"] = [ai_ocr_diagnostic] if ai_ocr_diagnostic else []
+
+            row.payload_metadata = sanitize_json({
+                **(row.payload_metadata or {}),
+                **request_metadata,
+                "force_reprocess": force,
+                "page_count": pdf_metadata.get("page_count", (row.payload_metadata or {}).get("page_count")),
+                "estimated_sheets_duplex": (
+                    int((pdf_metadata.get("page_count") + 1) / 2)
+                    if isinstance(pdf_metadata.get("page_count"), int)
+                    else (row.payload_metadata or {}).get("estimated_sheets_duplex")
+                ),
+                "sha256": pdf_metadata.get("sha256", (row.payload_metadata or {}).get("sha256")),
+                "action_code": pdf_metadata.get("action_code", (row.payload_metadata or {}).get("action_code")),
+                "text_extraction_source": pdf_text_source,
+                "ocr_provider": text_extraction.provider if text_extraction else None,
+                "ocr_provider_diagnostic": ocr_provider_diagnostic if pdf_text_source == "ocr_not_configured" else None,
+                "ocr_pages_processed": len(text_extraction.pages) if text_extraction else 0,
+                "extracted_text_characters": len(text_extraction.full_text) if text_extraction else 0,
+                "text_pages_detected": sum(bool(page.text.strip()) for page in text_extraction.pages) if text_extraction else 0,
+                "ai_ocr_enabled": candidate_summary.get("ai_ocr_enabled", False),
+                "ai_ocr_provider": candidate_summary.get("ai_ocr_provider"),
+                "ai_ocr_model": candidate_summary.get("ai_ocr_model"),
+                "ai_ocr_summary": candidate_summary.get("ai_ocr_summary"),
+                "ai_ocr_confidence": candidate_summary.get("ai_ocr_confidence"),
+                "ai_ocr_warnings": candidate_summary.get("ai_ocr_warnings", []),
+                "ai_ocr_error": candidate_summary.get("ai_ocr_error"),
+                "ai_participant_items": candidate_summary.get("ai_participant_items", []),
+                **candidate_summary,
+            })
+            persist_processing_progress(job_id, 90, "saving", "Guardando resultados de revisión.")
+
+            row.status = JobStatus.REQUIRES_REVIEW.value
+            row.finished_at = datetime.now(timezone.utc)
+
+            if pdf_text_source == "ocr_not_configured":
+                message = (
+                    "PDF conservado y analizado. Es un escaneo sin texto digital; "
+                    "el motor OCR no está disponible en este servidor, por lo que no se validaron participantes ni documentos."
+                )
+                if ocr_provider_diagnostic:
+                    message = f"{message} {ocr_provider_diagnostic}"
+            elif pdf_text_source == "source_unavailable":
+                message = "No se encontró el PDF original. El job requiere revisión y no se ejecutó la validación documental."
+            elif pdf_text_source == "ocr":
+                message = (
+                    f"OCR local ({text_extraction.provider}) extrajo texto de "
+                    f"{row.payload_metadata['text_pages_detected']} páginas. "
+                    f"Detectó {candidate_summary['roster_candidate_count']} candidatos en páginas de lista "
+                    f"y {candidate_summary['evidence_candidate_count']} en otras páginas. "
+                    f"{candidate_summary['cedula_checksum_valid_count']} pasan el control matemático "
+                    f"del dígito; {candidate_summary['cedula_checksum_invalid_count']} no lo pasan. "
+                    f"Coincidencias exactas entre páginas con lectura confiable: {candidate_summary['candidate_matches']}; "
+                    f"{candidate_summary['low_confidence_evidence_candidates']} candidatos de documento "
+                    "tienen baja confianza de OCR. El control de dígito y las coincidencias no confirman "
+                    "la identidad ni que el documento pertenezca a una persona; revisa los PDF originales."
+                )
+            else:
+                message = (
+                    f"Se extrajo texto digital de {row.payload_metadata['text_pages_detected']} páginas. "
+                    f"Detectó {candidate_summary['roster_candidate_count']} candidatos en páginas de lista "
+                    f"y {candidate_summary['evidence_candidate_count']} en otras páginas. "
+                    f"{candidate_summary['cedula_checksum_valid_count']} pasan el control matemático "
+                    f"del dígito; {candidate_summary['cedula_checksum_invalid_count']} no lo pasan. "
+                    f"Coincidencias exactas entre páginas con lectura confiable: {candidate_summary['candidate_matches']}. "
+                    "El control no confirma identidad ni asociación; revisa los PDF originales."
+                )
+            if pdf_metadata.get("action_code"):
+                message = f"{message} Código candidato detectado en el nombre del archivo: {pdf_metadata.get('action_code')}."
+            if row.payload_metadata.get("ai_ocr_enabled") and row.payload_metadata.get("ai_ocr_summary"):
+                message = f"{message} IA asistida: {row.payload_metadata.get('ai_ocr_summary')}."
+            total_pages = row.payload_metadata.get("page_count")
+            processed_pages = row.payload_metadata.get("ocr_pages_processed")
+            if isinstance(total_pages, int) and isinstance(processed_pages, int) and processed_pages > 0 and processed_pages < total_pages:
+                message = (
+                    f"{message} Modo rápido activo: OCR aplicado a {processed_pages} de {total_pages} páginas "
+                    "(para acelerar revisión automática)."
+                )
+
+            summary_result = session.scalar(
+                select(ValidationResultORM).where(
+                    ValidationResultORM.job_id == job_id,
+                    ValidationResultORM.participant_id.is_(None),
+                    ValidationResultORM.identity_document_id.is_(None),
+                    ValidationResultORM.rule_id.is_(None),
+                ).limit(1)
+            )
+            if summary_result is None:
+                summary_result = ValidationResultORM(
+                    id=str(uuid4()),
+                    job_id=job_id,
+                    participant_id=None,
+                    identity_document_id=None,
+                    rule_id=None,
+                    outcome=ResultOutcome.NO_VERIFICABLE.value,
+                    reason_code=RuleCode.DIFERENCIA_DETECTADA.value,
+                    message=message,
+                    evidence_ref=Path(row.source_pdf_path).name,
+                    created_at=datetime.now(timezone.utc),
+                )
+                session.add(summary_result)
+            else:
+                summary_result.outcome = ResultOutcome.NO_VERIFICABLE.value
+                summary_result.reason_code = RuleCode.DIFERENCIA_DETECTADA.value
+                summary_result.message = message
+                summary_result.evidence_ref = Path(row.source_pdf_path).name
+                summary_result.created_at = datetime.now(timezone.utc)
+
+            set_processing_progress(row, 100, "done", "Revisión automática completada.")
+            session.commit()
+        except Exception as exc:
+            row.status = JobStatus.FAILED.value
+            row.finished_at = datetime.now(timezone.utc)
+            set_processing_progress(row, 100, "failed", f"Error durante la revisión automática: {exc}")
+            session.commit()
 
 
 @app.get("/health")
@@ -564,6 +1031,7 @@ async def create_job(
 
 @app.post("/api/v1/jobs/upload", status_code=status.HTTP_201_CREATED)
 async def upload_pdf_job(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     metadata: str = Form(default='{}'),
     current_user: UserORM = Depends(get_current_user),
@@ -593,6 +1061,9 @@ async def upload_pdf_job(
         "page_count": stored["page_count"],
         "action_code": stored["action_code"],
         "file_size": stored["file_size"],
+        "processing_progress_percent": 0,
+        "processing_stage": "queued",
+        "processing_message": "PDF recibido. En cola para revisión automática.",
     })
     with SessionLocal() as session:
         job = ProcessingJobORM(
@@ -606,8 +1077,17 @@ async def upload_pdf_job(
         )
         session.add(job)
         session.commit()
-        session.refresh(job)
-        return serialize_processing_job(job)
+    background_tasks.add_task(
+        process_job_in_background,
+        job_id,
+        current_user.username,
+        False,
+        {},
+    )
+    with SessionLocal() as session:
+        job = session.get(ProcessingJobORM, job_id)
+        review = session.get(HumanReviewORM, job_id)
+        return serialize_processing_job(job, review)
 
 
 @app.get("/api/v1/jobs")
@@ -654,6 +1134,96 @@ async def dashboard_summary(current_user: UserORM = Depends(get_current_user)) -
             "incidents": sum(result.outcome == ResultOutcome.INCIDENCIA.value for result in results),
             "not_verifiable": sum(result.outcome == ResultOutcome.NO_VERIFICABLE.value for result in results),
             "processed": sum(job.status == JobStatus.COMPLETED.value for job, _ in available_jobs),
+        }
+
+
+@app.get("/api/v1/relations")
+async def list_user_relations(
+    owner_id: str | None = None,
+    limit: int = 200,
+    current_user: UserORM = Depends(get_current_user),
+) -> Dict[str, Any]:
+    limit = min(max(limit, 1), 500)
+    with SessionLocal() as session:
+        owner_ids = resolve_relation_owner_ids(session, current_user, owner_id)
+        rows = session.execute(
+            select(ProcessingJobORM, HumanReviewORM)
+            .outerjoin(HumanReviewORM, HumanReviewORM.job_id == ProcessingJobORM.id)
+            .where(ProcessingJobORM.created_by.in_(owner_ids))
+            .order_by(ProcessingJobORM.queued_at.desc())
+            .limit(limit)
+        ).all()
+        items = build_relation_records(session, rows)
+        return {
+            "items": items,
+            "total": len(items),
+            "owner_scope": "all" if current_user.role == "admin" and owner_id is None else "personal",
+        }
+
+
+@app.get("/api/v1/relations/returned")
+async def list_returned_relations(
+    owner_id: str | None = None,
+    limit: int = 200,
+    current_user: UserORM = Depends(get_current_user),
+) -> Dict[str, Any]:
+    limit = min(max(limit, 1), 500)
+    with SessionLocal() as session:
+        owner_ids = resolve_relation_owner_ids(session, current_user, owner_id)
+        rows = session.execute(
+            select(ProcessingJobORM, HumanReviewORM)
+            .join(HumanReviewORM, HumanReviewORM.job_id == ProcessingJobORM.id)
+            .where(
+                ProcessingJobORM.created_by.in_(owner_ids),
+                HumanReviewORM.final_status == "DEVUELTA",
+            )
+            .order_by(HumanReviewORM.reviewed_at.desc())
+            .limit(limit)
+        ).all()
+        items = build_relation_records(session, rows)
+        return {"items": items, "total": len(items)}
+
+
+@app.get("/api/v1/relations/returned/{job_id}/print")
+async def get_returned_relation_print_data(
+    job_id: UUID,
+    current_user: UserORM = Depends(get_current_user),
+) -> Dict[str, Any]:
+    with SessionLocal() as session:
+        job = session.get(ProcessingJobORM, str(job_id))
+        if job is None:
+            raise HTTPException(status_code=404, detail="Expediente no encontrado.")
+        if current_user.role != "admin" and job.created_by != current_user.id:
+            raise HTTPException(status_code=404, detail="Expediente no encontrado.")
+
+        review = session.get(HumanReviewORM, str(job_id))
+        if review is None or review.final_status != "DEVUELTA":
+            raise HTTPException(status_code=404, detail="Este expediente no está en estado DEVUELTA.")
+
+        creator = session.get(UserORM, job.created_by) if job.created_by else None
+        metadata = job.payload_metadata or {}
+        action_code = metadata.get("action_code")
+        if not isinstance(action_code, str) or not re.fullmatch(r"\d{4}-\d{5,8}", action_code):
+            action_code = None
+        action_name = "—"
+        if action_code:
+            action_row = session.scalar(select(FormativeActionORM).where(FormativeActionORM.action_code == action_code))
+            if action_row is not None and action_row.name:
+                action_name = action_row.name
+        reviewed_at = review.reviewed_at.astimezone(timezone.utc) if review.reviewed_at else datetime.now(timezone.utc)
+        participant_count = metadata.get("roster_candidate_count") or metadata.get("cedula_candidate_count") or 0
+
+        return {
+            "job_id": job.id,
+            "codigo_accion_formativa": action_code or "—",
+            "accion_formativa": action_name,
+            "fecha_devuelto": reviewed_at.strftime("%d/%m/%y"),
+            "hora_devuelto": reviewed_at.strftime("%H:%M"),
+            "asesor_observacion": review.comments or "INICIO DEVUELTO, ACTUALIZAR",
+            "participantes": participant_count,
+            "devuelto_por": review.reviewer,
+            "registrado_por_usuario": creator.username if creator else "—",
+            "documento": Path(job.source_pdf_path).name,
         }
 
 
@@ -791,266 +1361,42 @@ async def get_job(job_id: UUID, current_user: UserORM = Depends(get_current_user
 async def process_job(
     job_id: UUID,
     payload: ProcessJobRequest,
+    background_tasks: BackgroundTasks,
     current_user: UserORM = Depends(get_current_user),
 ) -> Dict[str, Any]:
     with SessionLocal() as session:
         row = get_accessible_job(session, str(job_id), current_user)
-
-        previous_review = session.get(HumanReviewORM, str(job_id))
-        if previous_review is not None:
-            reviewed_at = datetime.now(timezone.utc)
-            session.add(AuditEventORM(
-                id=str(uuid4()),
-                job_id=str(job_id),
-                actor=current_user.username,
-                action="HUMAN_REVIEW_INVALIDATED_BY_REPROCESS",
-                details=sanitize_json({
-                    "previous_reviewer": previous_review.reviewer,
-                    "previous_final_status": previous_review.final_status,
-                }),
-                created_at=reviewed_at,
-            ))
-            session.delete(previous_review)
-
-        previous_verifications = session.scalars(
-            select(ValidationResultORM).where(
-                ValidationResultORM.job_id == str(job_id),
-                ValidationResultORM.participant_id.is_not(None),
-            )
-        ).all()
-        if previous_verifications:
-            session.add(AuditEventORM(
-                id=str(uuid4()),
-                job_id=str(job_id),
-                actor=current_user.username,
-                action="CEDULA_VERIFICATIONS_INVALIDATED_BY_REPROCESS",
-                details={"invalidated_count": len(previous_verifications)},
-                created_at=datetime.now(timezone.utc),
-            ))
-            for verification in previous_verifications:
-                session.delete(verification)
-
+        if row.status == JobStatus.PROCESSING.value:
+            progress = (row.payload_metadata or {}).get("processing_progress_percent", 0)
+            stage = (row.payload_metadata or {}).get("processing_stage", "processing")
+            message = (row.payload_metadata or {}).get("processing_message", "La revisión automática ya está en curso.")
+            return {
+                "job_id": str(job_id),
+                "status": row.status,
+                "progress_percent": progress,
+                "stage": stage,
+                "message": message,
+            }
         row.status = JobStatus.PROCESSING.value
         row.started_at = datetime.now(timezone.utc)
-
-        pdf_metadata: Dict[str, Any] = {}
-        pdf_text_source = "source_unavailable"
-        text_extraction = None
-        if row.source_pdf_path and is_managed_evidence_available(row.source_pdf_path):
-            try:
-                pdf_metadata = pdf_service.inspect_existing_pdf(row.source_pdf_path)
-                text_extraction = await run_in_threadpool(
-                    pdf_service.extract_text,
-                    row.source_pdf_path,
-                    ocr_provider,
-                )
-                pdf_text_source = text_extraction.source
-            except PdfUploadLimitError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"PDF exceeds safe processing limits: {exc}",
-                ) from exc
-            except FileNotFoundError:
-                pdf_metadata = {}
-
-        candidate_summary = summarize_document_candidates(
-            text_extraction.pages if text_extraction else []
-        )
-        row.payload_metadata = sanitize_json({
-            **(row.payload_metadata or {}),
-            **payload.metadata,
-            "force_reprocess": payload.force,
-            "page_count": pdf_metadata.get("page_count", (row.payload_metadata or {}).get("page_count")),
-            "sha256": pdf_metadata.get("sha256", (row.payload_metadata or {}).get("sha256")),
-            "action_code": pdf_metadata.get("action_code", (row.payload_metadata or {}).get("action_code")),
-            "text_extraction_source": pdf_text_source,
-            "ocr_provider": text_extraction.provider if text_extraction else None,
-            "extracted_text_characters": len(text_extraction.full_text) if text_extraction else 0,
-            "text_pages_detected": sum(bool(page.text.strip()) for page in text_extraction.pages) if text_extraction else 0,
-            **candidate_summary,
-        })
-
-        row.status = JobStatus.REQUIRES_REVIEW.value
-        row.finished_at = datetime.now(timezone.utc)
-
-        if pdf_text_source == "ocr_not_configured":
-            message = "PDF conservado y analizado. Es un escaneo sin texto digital; OCR no está configurado, por lo que no se validaron participantes ni documentos."
-        elif pdf_text_source == "source_unavailable":
-            message = "No se encontró el PDF original. El job requiere revisión y no se ejecutó la validación documental."
-        elif pdf_text_source == "ocr":
-            message = (
-                f"OCR local ({text_extraction.provider}) extrajo texto de "
-                f"{row.payload_metadata['text_pages_detected']} páginas. "
-                f"Detectó {candidate_summary['roster_candidate_count']} candidatos en páginas de lista "
-                f"y {candidate_summary['evidence_candidate_count']} en otras páginas. "
-                f"{candidate_summary['cedula_checksum_valid_count']} pasan el control matemático "
-                f"del dígito; {candidate_summary['cedula_checksum_invalid_count']} no lo pasan. "
-                f"Coincidencias exactas entre páginas con lectura confiable: {candidate_summary['candidate_matches']}; "
-                f"{candidate_summary['low_confidence_evidence_candidates']} candidatos de documento "
-                "tienen baja confianza de OCR. El control de dígito y las coincidencias no confirman "
-                "la identidad ni que el documento pertenezca a una persona; revisa los PDF originales."
-            )
-        else:
-            message = (
-                f"Se extrajo texto digital de {row.payload_metadata['text_pages_detected']} páginas. "
-                f"Detectó {candidate_summary['roster_candidate_count']} candidatos en páginas de lista "
-                f"y {candidate_summary['evidence_candidate_count']} en otras páginas. "
-                f"{candidate_summary['cedula_checksum_valid_count']} pasan el control matemático "
-                f"del dígito; {candidate_summary['cedula_checksum_invalid_count']} no lo pasan. "
-                f"Coincidencias exactas entre páginas con lectura confiable: {candidate_summary['candidate_matches']}. "
-                "El control no confirma identidad ni asociación; revisa los PDF originales."
-            )
-        if pdf_metadata.get("action_code"):
-            message = f"{message} Código candidato detectado en el nombre del archivo: {pdf_metadata.get('action_code')}."
-
-        summary_result = session.scalar(
-            select(ValidationResultORM).where(
-                ValidationResultORM.job_id == str(job_id),
-                ValidationResultORM.participant_id.is_(None),
-                ValidationResultORM.identity_document_id.is_(None),
-                ValidationResultORM.rule_id.is_(None),
-            ).limit(1)
-        )
-        if summary_result is None:
-            summary_result = ValidationResultORM(
-                id=str(uuid4()),
-                job_id=str(job_id),
-                participant_id=None,
-                identity_document_id=None,
-                rule_id=None,
-                outcome=ResultOutcome.NO_VERIFICABLE.value,
-                reason_code=RuleCode.DIFERENCIA_DETECTADA.value,
-                message=message,
-                evidence_ref=Path(row.source_pdf_path).name,
-                created_at=datetime.now(timezone.utc),
-            )
-            session.add(summary_result)
-        else:
-            summary_result.outcome = ResultOutcome.NO_VERIFICABLE.value
-            summary_result.reason_code = RuleCode.DIFERENCIA_DETECTADA.value
-            summary_result.message = message
-            summary_result.evidence_ref = Path(row.source_pdf_path).name
-            summary_result.created_at = datetime.now(timezone.utc)
+        row.finished_at = None
+        set_processing_progress(row, 5, "queued", "Revisión automática en cola.")
         session.commit()
 
-        results = session.scalars(select(ValidationResultORM).where(ValidationResultORM.job_id == str(job_id))).all()
-        return {
-            "job_id": str(job_id),
-            "status": row.status,
-            "message": summary_result.message,
-            "results": [serialize_validation_result(item) for item in results],
-        }
-
-
-@app.post("/api/v1/jobs/{job_id}/cedula-verifications")
-async def verify_job_cedula(
-    job_id: UUID,
-    payload: CedulaVerificationRequest,
-    current_user: UserORM = Depends(get_current_user),
-) -> Dict[str, Any]:
-    reference_match = re.fullmatch(r"fila\s+(\d{1,6})", payload.participant_reference.strip(), re.IGNORECASE)
-    if reference_match is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Usa una referencia de fila, por ejemplo: Fila 12.",
-        )
-    participant_reference = f"Fila {int(reference_match.group(1))}"
-    assessment = assess_cedula_pair(
-        payload.roster_cedula,
-        payload.document_cedula,
-        payload.visual_identity_confirmed,
+    background_tasks.add_task(
+        process_job_in_background,
+        str(job_id),
+        current_user.username,
+        payload.force,
+        payload.metadata,
     )
-
-    with SessionLocal() as session:
-        job = get_accessible_job(session, str(job_id), current_user)
-        if not is_managed_evidence_available(job.source_pdf_path):
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="El PDF original no está disponible para cotejo.")
-
-        page_count = (job.payload_metadata or {}).get("page_count")
-        if isinstance(page_count, int) and max(payload.roster_page, payload.document_page) > page_count:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"Las páginas deben estar entre 1 y {page_count}.",
-            )
-
-        participant_id = str(uuid5(UUID(str(job_id)), participant_reference.casefold()))
-        document_id = str(uuid5(UUID(str(job_id)), f"{participant_reference.casefold()}:{payload.document_page}"))
-        result = session.scalar(
-            select(ValidationResultORM).where(
-                ValidationResultORM.job_id == str(job_id),
-                ValidationResultORM.participant_id == participant_id,
-                ValidationResultORM.rule_id == "CEDULA_MANUAL",
-            )
-        )
-        reviewed_at = datetime.now(timezone.utc)
-        evidence_ref = f"Lista: página {payload.roster_page}; documento: página {payload.document_page}"
-        message = f"{participant_reference}: {assessment.message}"
-        if result is None:
-            result = ValidationResultORM(
-                id=str(uuid4()),
-                job_id=str(job_id),
-                participant_id=participant_id,
-                identity_document_id=document_id,
-                rule_id="CEDULA_MANUAL",
-                outcome=assessment.outcome,
-                reason_code=assessment.reason_code,
-                message=message,
-                evidence_ref=evidence_ref,
-                created_at=reviewed_at,
-            )
-            session.add(result)
-        else:
-            result.identity_document_id = document_id
-            result.outcome = assessment.outcome
-            result.reason_code = assessment.reason_code
-            result.message = message
-            result.evidence_ref = evidence_ref
-            result.created_at = reviewed_at
-
-        session.add(AuditEventORM(
-            id=str(uuid4()),
-            job_id=str(job_id),
-            actor=current_user.username,
-            action="CEDULA_MANUAL_VERIFICATION_RECORDED",
-            details={
-                "participant_reference": participant_reference,
-                "outcome": assessment.outcome,
-                "reason_code": assessment.reason_code,
-                "roster_page": payload.roster_page,
-                "document_page": payload.document_page,
-            },
-            created_at=reviewed_at,
-        ))
-        verification_rows = session.scalars(
-            select(ValidationResultORM).where(
-                ValidationResultORM.job_id == str(job_id),
-                ValidationResultORM.rule_id == "CEDULA_MANUAL",
-            )
-        ).all()
-        verified_by_participant = {
-            item.participant_id: item.outcome
-            for item in verification_rows
-            if item.participant_id is not None
-        }
-        verified_by_participant[participant_id] = assessment.outcome
-        verified_count = sum(
-            outcome == ResultOutcome.CORRECTO.value
-            for outcome in verified_by_participant.values()
-        )
-        metadata = dict(job.payload_metadata or {})
-        metadata["verified_identities"] = verified_count
-        metadata["verification_requires_human_visual_review"] = True
-        job.payload_metadata = metadata
-        session.commit()
-
-        return {
-            "participant_reference": participant_reference,
-            "outcome": assessment.outcome,
-            "reason_code": assessment.reason_code,
-            "message": message,
-            "evidence_ref": evidence_ref,
-            "created_at": reviewed_at.isoformat(),
-        }
+    return {
+        "job_id": str(job_id),
+        "status": JobStatus.PROCESSING.value,
+        "progress_percent": 5,
+        "stage": "queued",
+        "message": "Revisión automática iniciada.",
+    }
 
 
 @app.get("/api/v1/jobs/{job_id}/results")

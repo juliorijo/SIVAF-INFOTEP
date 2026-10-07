@@ -5,7 +5,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Sequence
+from typing import BinaryIO, Callable, Sequence
 
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
@@ -99,6 +99,7 @@ class PdfIngestionService:
         self,
         pdf_path: str | os.PathLike[str],
         ocr_provider: OCRProvider | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> PdfTextExtraction:
         file_path = Path(pdf_path)
         if not file_path.is_file():
@@ -117,7 +118,7 @@ class PdfIngestionService:
         if ocr_provider is None:
             return PdfTextExtraction(pages=pages, source="ocr_not_configured")
 
-        ocr_result = ocr_provider.extract_text(str(file_path))
+        ocr_result = ocr_provider.extract_text(str(file_path), progress_callback=progress_callback)
         if not ocr_result.pages:
             raise ValueError("OCR provider returned no page results")
         if any(page.page_number < 1 for page in ocr_result.pages):

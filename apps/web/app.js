@@ -11,6 +11,8 @@ const state = {
   evidenceObjectUrl: null, previewObjectUrl: null, previewPage: 1, previewPageCount: 0,
   user: null, actions: { items: [], total: 0, latest_import: null }, actionPage: 0,
   access: { users: [], permissions: [], teams: [] },
+  relations: { items: [], total: 0 },
+  returned: { items: [], total: 0 },
   selectedAccessUserId: null,
 };
 let refreshTimer = null;
@@ -37,6 +39,90 @@ const roleLabels = {
   analyst: "Analista",
   dba: "DBA",
 };
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function showUploadProgress(percent, label, message) {
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+  const wrap = $("#upload-progress");
+  const bar = $("#upload-progress-fill");
+  const percentText = $("#upload-progress-percent");
+  const labelText = $("#upload-progress-label");
+  const messageText = $("#upload-progress-message");
+  wrap.hidden = false;
+  bar.style.width = `${safePercent}%`;
+  percentText.textContent = `${safePercent}%`;
+  labelText.textContent = label;
+  messageText.textContent = message;
+  const track = wrap.querySelector(".upload-progress-track");
+  track.setAttribute("aria-valuenow", String(safePercent));
+}
+
+function hideUploadProgress() {
+  $("#upload-progress").hidden = true;
+}
+
+async function uploadPdfWithProgress(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${API_BASE}/api/v1/jobs/upload`, true);
+    request.withCredentials = true;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        onProgress((event.loaded / event.total) * 100);
+      }
+    };
+    request.onerror = () => reject(new Error("No se pudo enviar el PDF al servidor."));
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        try {
+          resolve(JSON.parse(request.responseText));
+        } catch {
+          reject(new Error("La respuesta del servidor no es válida."));
+        }
+        return;
+      }
+      let detail = `Error HTTP ${request.status}`;
+      try {
+        const body = JSON.parse(request.responseText);
+        detail = body.detail || detail;
+      } catch {}
+      reject(new Error(detail));
+    };
+    request.send(formData);
+  });
+}
+
+async function waitForJobCompletion(jobId, options = {}) {
+  const timeoutMs = options.timeoutMs || 180000;
+  const startedAt = Date.now();
+  while ((Date.now() - startedAt) < timeoutMs) {
+    const job = await api(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
+    const percent = Number(job.metadata?.processing_progress_percent ?? (
+      job.status === "REQUIRES_REVIEW" ? 100 : (job.status === "FAILED" ? 100 : 25)
+    ));
+    const stage = job.metadata?.processing_stage || (
+      job.status === "PROCESSING" ? "processing" : (job.status === "QUEUED" ? "queued" : "done")
+    );
+    const message = job.metadata?.processing_message
+      || (job.status === "PROCESSING"
+        ? "Procesando el PDF automáticamente."
+        : (job.status === "QUEUED" ? "PDF en cola de revisión." : "Procesamiento finalizado."));
+    const label = stage === "done" ? "Revisión completada" : "Revisión automática en progreso";
+    showUploadProgress(percent, label, message);
+    if (job.status === "REQUIRES_REVIEW" || job.status === "COMPLETED") {
+      showUploadProgress(100, "Revisión completada", "El análisis automático terminó.");
+      return job;
+    }
+    if (job.status === "FAILED") {
+      throw new Error(message || "El análisis automático falló.");
+    }
+    await delay(1200);
+  }
+  throw new Error("La revisión está tardando más de lo esperado. Intenta actualizar para ver el avance.");
+}
 
 function toast(message) {
   const element = $("#toast");
@@ -66,6 +152,8 @@ function showDashboard(user) {
   $("#reviewer-info").textContent = `La revisión se registrará a nombre de ${user.username}.`;
   $("#action-import-controls").hidden = user.role !== "admin";
   const canAccessControl = ["admin", "supervisor", "dba"].includes(user.role);
+  $("#relations-navigation").hidden = false;
+  $("#returned-navigation").hidden = false;
   $("#access-navigation").hidden = !canAccessControl;
   const isAdmin = user.role === "admin";
   $("#access-admin-users").hidden = !isAdmin;
@@ -200,6 +288,8 @@ function renderRoute() {
   const routes = {
     "#actions": ["actions-view", "Acciones formativas"],
     "#reviews": ["reviews-view", "Revisión pendiente"],
+    "#relations": ["relations-view", "Relación de trabajo"],
+    "#returned": ["returned-view", "Devueltos"],
     "#access": ["access-view", "Usuarios y permisos"],
   };
   const [viewId, title] = routes[window.location.hash] || ["dashboard-view", "Panel general"];
@@ -217,6 +307,8 @@ function renderRoute() {
   }
   if (viewId === "actions-view") void loadActions();
   if (viewId === "access-view") void loadAccessControlData();
+  if (viewId === "relations-view") void loadRelations();
+  if (viewId === "returned-view") void loadReturned();
 }
 
 function renderActions() {
@@ -324,6 +416,155 @@ async function loadAccessControlData() {
     state.access = { users: [], permissions: [], teams: [] };
     renderAccessControlData();
     $("#access-note").textContent = `No tienes permiso para ver todos los datos de acceso: ${error.message}`;
+  }
+}
+
+function renderRelations() {
+  const body = $("#relations-list");
+  const items = state.relations.items || [];
+  if (!items.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty-state">No hay trabajos registrados para este filtro.</td></tr>`;
+  } else {
+    body.innerHTML = items.map((item) => {
+      const reviewState = item.review?.final_status
+        ? (finalStatusLabels[item.review.final_status] || item.review.final_status)
+        : "Pendiente";
+      const date = item.review?.reviewed_at || item.queued_at;
+      const detail = `${item.action_code || "Código pendiente"} · ${item.action_name || "—"}`;
+      return `<tr>
+        <td>${escapeHtml(item.created_by_username || "—")}</td>
+        <td><strong>${escapeHtml(item.source_pdf_name || "Documento PDF")}</strong><br><small>${escapeHtml(detail)}</small></td>
+        <td>${escapeHtml(statusInfo[item.status]?.[0] || item.status || "—")}</td>
+        <td>${escapeHtml(reviewState)}</td>
+        <td>${escapeHtml(date ? new Date(date).toLocaleString("es-DO") : "—")}</td>
+      </tr>`;
+    }).join("");
+  }
+  $("#relations-summary").textContent = `${items.length} trabajo${items.length === 1 ? "" : "s"} en la relación actual`;
+}
+
+async function loadRelationOwners() {
+  if (state.user?.role !== "admin") {
+    $("#relations-owner-filter-wrap").hidden = true;
+    return;
+  }
+  $("#relations-owner-filter-wrap").hidden = false;
+  const users = await api("/api/v1/users");
+  const select = $("#relations-owner-filter");
+  const current = select.value;
+  select.innerHTML = `<option value="">Todos</option>${users.map((user) => (
+    `<option value="${escapeHtml(user.id)}">${escapeHtml(user.username)}</option>`
+  )).join("")}`;
+  select.value = current;
+}
+
+async function loadRelations() {
+  try {
+    await loadRelationOwners();
+    const ownerId = state.user?.role === "admin" ? $("#relations-owner-filter").value : "";
+    const params = new URLSearchParams({ limit: "300" });
+    if (ownerId) params.set("owner_id", ownerId);
+    state.relations = await api(`/api/v1/relations?${params.toString()}`);
+    renderRelations();
+  } catch (error) {
+    $("#relations-list").innerHTML = `<tr><td colspan="5" class="empty-state">No se pudo cargar la relación: ${escapeHtml(error.message)}</td></tr>`;
+    $("#relations-summary").textContent = "Error al cargar relaciones";
+  }
+}
+
+function renderReturned() {
+  const body = $("#returned-list");
+  const items = state.returned.items || [];
+  if (!items.length) {
+    body.innerHTML = `<tr><td colspan="5" class="empty-state">No hay inicios devueltos.</td></tr>`;
+  } else {
+    body.innerHTML = items.map((item) => {
+      const detail = `${item.action_code || "Código pendiente"} · ${item.action_name || "—"}`;
+      return `<tr>
+        <td>${escapeHtml(item.created_by_username || "—")}</td>
+        <td><strong>${escapeHtml(item.source_pdf_name || "Documento PDF")}</strong><br><small>${escapeHtml(detail)}</small></td>
+        <td>${escapeHtml(item.review?.comments || "INICIO DEVUELTO, ACTUALIZAR")}</td>
+        <td>${escapeHtml(item.review?.reviewed_at ? new Date(item.review.reviewed_at).toLocaleString("es-DO") : "—")}</td>
+        <td><button class="text-button" data-print-returned="${escapeHtml(item.job_id)}" type="button">Imprimir</button></td>
+      </tr>`;
+    }).join("");
+    body.querySelectorAll("[data-print-returned]").forEach((button) => {
+      button.addEventListener("click", () => {
+        void printReturnedTemplate(button.dataset.printReturned);
+      });
+    });
+  }
+  $("#returned-summary").textContent = `${items.length} inicio${items.length === 1 ? "" : "s"} en estado DEVUELTA`;
+}
+
+async function loadReturned() {
+  try {
+    const ownerId = state.user?.role === "admin" ? $("#relations-owner-filter")?.value || "" : "";
+    const params = new URLSearchParams({ limit: "300" });
+    if (ownerId) params.set("owner_id", ownerId);
+    state.returned = await api(`/api/v1/relations/returned?${params.toString()}`);
+    renderReturned();
+  } catch (error) {
+    $("#returned-list").innerHTML = `<tr><td colspan="5" class="empty-state">No se pudo cargar devoluciones: ${escapeHtml(error.message)}</td></tr>`;
+    $("#returned-summary").textContent = "Error al cargar devoluciones";
+  }
+}
+
+async function printReturnedTemplate(jobId) {
+  if (!jobId) {
+    return;
+  }
+  try {
+    const data = await api(`/api/v1/relations/returned/${encodeURIComponent(jobId)}/print`);
+    const existingFrame = $("#sivaf-print-frame");
+    if (existingFrame) {
+      existingFrame.remove();
+    }
+    const iframe = document.createElement("iframe");
+    iframe.id = "sivaf-print-frame";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.right = "0";
+    iframe.style.bottom = "0";
+    iframe.style.width = "0";
+    iframe.style.height = "0";
+    iframe.style.border = "0";
+    iframe.style.opacity = "0";
+    iframe.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><title>Acción formativa devuelta</title>
+      <style>
+        body{font-family:Arial,sans-serif;padding:24px;color:#111} h1,h2{margin:0}
+        .frame{border:1px solid #222;padding:12px;margin-bottom:14px}
+        .row{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0}
+        .col{flex:1;min-width:250px}
+        .label{font-weight:700}
+        @media print {.frame{page-break-inside:avoid}}
+      </style></head><body>
+      <div class="frame"><h2>ACCIONES FORMATIVAS DEVUELTAS</h2></div>
+      <div class="frame">
+        <div class="row"><div class="col"><span class="label">DIVISIÓN DE REGISTRO:</span> CENTRO NACIONAL DE FORMACIÓN DOCENTE EN TÉCNICO PROFESIONAL</div></div>
+        <div class="row"><div class="col"><span class="label">CÓDIGO ACCIÓN FORMATIVA:</span> ${escapeHtml(data.codigo_accion_formativa)}</div></div>
+        <div class="row"><div class="col"><span class="label">ACCIÓN FORMATIVA:</span> ${escapeHtml(data.accion_formativa)}</div></div>
+        <div class="row"><div class="col"><span class="label">ASESOR - OBSERVACIÓN:</span> ${escapeHtml(data.asesor_observacion)}</div></div>
+        <div class="row"><div class="col"><span class="label">PARTICIPANTES #:</span> ${escapeHtml(data.participantes)}</div></div>
+      </div>
+      <div class="frame">
+        <div class="row"><div class="col"><span class="label">DEVUELTO POR:</span> ${escapeHtml(data.devuelto_por || "—")}</div></div>
+        <div class="row"><div class="col"><span class="label">FECHA:</span> ${escapeHtml(data.fecha_devuelto)}</div><div class="col"><span class="label">HORA:</span> ${escapeHtml(data.hora_devuelto)}</div></div>
+        <div class="row"><div class="col"><span class="label">RECIBIDO POR:</span> __________________________________________</div></div>
+      </div></body></html>`;
+    iframe.onload = () => {
+      window.setTimeout(() => {
+        try {
+          iframe.contentWindow.focus();
+          iframe.contentWindow.print();
+        } catch (error) {
+          toast(`No se pudo imprimir: ${error.message}`);
+        }
+      }, 50);
+    };
+    document.body.appendChild(iframe);
+  } catch (error) {
+    toast(`No se pudo imprimir: ${error.message}`);
   }
 }
 
@@ -572,20 +813,25 @@ async function uploadPdf(file) {
   const uploadButton = $("#upload-trigger");
   uploadButton.disabled = true;
   uploadButton.innerHTML = "<span>…</span> Cargando PDF";
+  showUploadProgress(0, "Cargando PDF", "Subiendo archivo al servidor…");
   try {
-    const job = await api("/api/v1/jobs/upload", { method: "POST", body: form });
+    const job = await uploadPdfWithProgress(form, (uploadPercent) => {
+      showUploadProgress(uploadPercent * 0.35, "Cargando PDF", "Subiendo archivo al servidor…");
+    });
     state.jobs.unshift(job);
     state.page = 0;
     renderJobs();
-    toast("PDF guardado. El original se conserva como evidencia.");
+    const finalJob = await waitForJobCompletion(job.id);
+    toast("PDF cargado y revisión automática completada.");
     await loadJobs();
-    await openJob(job.id);
+    await openJob(finalJob.id);
   } catch (error) {
     toast(`No se pudo cargar el PDF: ${error.message}`);
   } finally {
     uploadButton.disabled = false;
     uploadButton.innerHTML = "<span>＋</span> Cargar documento PDF";
     $("#pdf-input").value = "";
+    window.setTimeout(hideUploadProgress, 1200);
   }
 }
 
@@ -608,6 +854,48 @@ function renderResults(results) {
   }).join("");
 }
 
+function formatPagesAndSheets(pages, sheets) {
+  const pageText = (pages && pages.length) ? pages.join(", ") : "—";
+  const sheetText = (sheets && sheets.length) ? sheets.join(", ") : "—";
+  return `Pág. ${pageText} · Hojas ${sheetText}`;
+}
+
+function renderParticipantsReview(metadata) {
+  const list = $("#participants-review-list");
+  const summary = $("#participants-review-summary");
+  const aiItems = metadata?.ai_participant_items || [];
+  const items = aiItems.length ? aiItems : (metadata?.participant_review_items || []);
+  const aiError = metadata?.ai_ocr_error || "";
+  const needsReview = Number(
+    metadata?.participants_requiring_review_count ??
+    items.filter((item) => item.review_status === "REQUIERE_REVISION").length
+  );
+  const okAutomatic = Number(
+    metadata?.participants_ok_automatic_count ??
+    items.filter((item) => item.review_status === "OK_AUTOMATICO").length
+  );
+  const sourceLabel = aiItems.length ? "IA asistida" : "OCR heurístico";
+  if (!items.length) {
+    list.innerHTML = `<tr><td colspan="6" class="empty-state">No hay participantes detectados por OCR en este expediente.</td></tr>`;
+    summary.textContent = aiItems.length
+      ? "Sin participantes detectados por IA."
+      : (aiError ? `IA asistida no disponible: ${aiError}` : "Sin participantes detectados.");
+    return;
+  }
+  summary.textContent = `${sourceLabel} · ${items.length} detectados · ${needsReview} requieren revisión · ${okAutomatic} OK automático${aiError ? ` · IA no disponible: ${aiError}` : ""}`;
+  list.innerHTML = items.map((item) => {
+    const requiresReview = item.review_status === "REQUIERE_REVISION";
+    return `<tr>
+      <td>${escapeHtml(item.reference || "—")}</td>
+      <td>${escapeHtml(item.cedula_masked || "—")}</td>
+      <td>${escapeHtml(formatPagesAndSheets(item.roster_pages, item.roster_sheets))}</td>
+      <td>${escapeHtml(formatPagesAndSheets(item.document_pages, item.document_sheets))}</td>
+      <td><span class="participant-status ${requiresReview ? "review" : "ok"}">${requiresReview ? "REVISAR" : "OK"}</span></td>
+      <td>${escapeHtml(item.review_reason || "—")}</td>
+    </tr>`;
+  }).join("");
+}
+
 function renderAudit(events) {
   const container = $("#audit-list");
   if (!events.length) {
@@ -618,9 +906,7 @@ function renderAudit(events) {
     <strong>${event.action === "HUMAN_REVIEW_INVALIDATED_BY_REPROCESS"
       ? `La revisión anterior quedó pendiente tras un nuevo procesamiento · ${escapeHtml(event.actor)}`
       : event.action === "CEDULA_VERIFICATIONS_INVALIDATED_BY_REPROCESS"
-        ? `${escapeHtml(event.details?.invalidated_count || 0)} cotejos de cédula invalidados tras reprocesar · ${escapeHtml(event.actor)}`
-        : event.action === "CEDULA_MANUAL_VERIFICATION_RECORDED"
-          ? `${escapeHtml(event.actor)} cotejó ${escapeHtml(event.details?.participant_reference)} · ${escapeHtml(event.details?.outcome)}`
+          ? `${escapeHtml(event.details?.invalidated_count || 0)} verificaciones heredadas invalidadas tras reprocesar · ${escapeHtml(event.actor)}`
           : `${escapeHtml(event.actor)} guardó una revisión`}</strong>
     <small>${escapeHtml(new Date(event.created_at).toLocaleString("es-DO"))}</small>
     ${event.details?.final_status ? `<span>Estado final: ${escapeHtml(finalStatusLabels[event.details.final_status] || event.details.final_status)}</span>` : ""}
@@ -682,13 +968,19 @@ async function openJob(jobId) {
     state.selectedJob = job;
     $("#detail-title").textContent = displayName(job);
     $("#detail-subtitle").textContent = getCode(job);
+    const pageCount = Number(job.metadata?.page_count || 0);
+    const estimatedSheets = Number(job.metadata?.estimated_sheets_duplex || (pageCount > 0 ? Math.ceil(pageCount / 2) : 0));
+    const ocrPagesProcessed = Number(job.metadata?.ocr_pages_processed || 0);
     $("#detail-meta").innerHTML = [
       ["Estado del expediente", statusInfo[job.status]?.[0] || job.status],
-      ["Páginas", job.metadata?.page_count ?? "Pendiente"],
+      ["Páginas del PDF", pageCount || "Pendiente"],
+      ["Hojas estimadas (doble cara)", estimatedSheets || "Pendiente"],
+      ["Páginas OCR procesadas", ocrPagesProcessed || "Pendiente"],
       ["Hash SHA256", job.original_file_hash ? `${job.original_file_hash.slice(0, 16)}…` : "No disponible"],
       ["Fecha de ingreso", job.queued_at ? new Date(job.queued_at).toLocaleString("es-DO") : "—"],
       ["Lectura de texto", job.metadata?.text_extraction_source || "Pendiente"],
       ["Proveedor OCR", job.metadata?.ocr_provider || "No utilizado"],
+      ["IA asistida", job.metadata?.ai_ocr_enabled ? (job.metadata?.ai_ocr_model || "Activa") : (job.metadata?.ai_ocr_error ? "Error" : "No utilizada")],
       ["Cédulas candidatas (sin validar)", job.metadata?.cedula_candidate_count ?? "Pendiente"],
       ["Páginas con candidatos", job.metadata?.cedula_candidate_pages?.join(", ") || "Ninguna detectada"],
       ["Candidatas en lista", job.metadata?.roster_candidate_count ?? "Pendiente"],
@@ -699,22 +991,16 @@ async function openJob(jobId) {
       ["No pasan en lista / documentos", `${job.metadata?.roster_checksum_invalid_count ?? "—"} / ${job.metadata?.evidence_checksum_invalid_count ?? "—"}`],
       ["Coincidencias exactas legibles", job.metadata?.candidate_matches ?? "Pendiente"],
       ["Candidatas de baja confianza", job.metadata?.low_confidence_evidence_candidates ?? "Pendiente"],
-      ["Cotejos confirmados por revisor", job.metadata?.verified_identities ?? 0],
       ["Código de acción", job.metadata?.action_code || "No determinado"],
       ["Revisor", review?.reviewer || "Pendiente"],
       ["Estado final manual", review?.final_status ? finalStatusLabels[review.final_status] || review.final_status : "Sin decisión"],
     ].map(([label, value]) => `<div class="meta-card"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`).join("");
 
     renderResults(results);
+    renderParticipantsReview(job.metadata || {});
     renderAudit(audit);
     $("#review-comments").value = review?.comments || "";
     $("#final-status").value = review?.final_status || "";
-    $("#cedula-participant-reference").value = "";
-    $("#cedula-roster-page").value = "";
-    $("#cedula-roster-number").value = "";
-    $("#cedula-document-page").value = "";
-    $("#cedula-document-number").value = "";
-    $("#cedula-visual-confirmed").checked = false;
     const evidenceUrl = `${API_BASE}/api/v1/jobs/${encodeURIComponent(job.id)}/evidence`;
     if (state.evidenceObjectUrl) URL.revokeObjectURL(state.evidenceObjectUrl);
     if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
@@ -778,49 +1064,21 @@ async function saveReview() {
   }
 }
 
-async function saveCedulaVerification() {
-  if (!state.selectedJob) return;
-  const button = $("#save-cedula-verification");
-  button.disabled = true;
-  button.textContent = "Evaluando…";
-  try {
-    const result = await api(
-      `/api/v1/jobs/${encodeURIComponent(state.selectedJob.id)}/cedula-verifications`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          participant_reference: $("#cedula-participant-reference").value,
-          roster_page: Number($("#cedula-roster-page").value),
-          document_page: Number($("#cedula-document-page").value),
-          roster_cedula: $("#cedula-roster-number").value,
-          document_cedula: $("#cedula-document-number").value,
-          visual_identity_confirmed: $("#cedula-visual-confirmed").checked,
-        }),
-      },
-    );
-    toast(`${result.participant_reference}: ${result.message}`);
-    await loadJobs();
-    await openJob(state.selectedJob.id);
-  } catch (error) {
-    toast(`No se pudo evaluar el cotejo: ${error.message}`);
-  } finally {
-    button.disabled = false;
-    button.textContent = "Evaluar y guardar cotejo";
-  }
-}
-
 async function processSelected() {
   if (!state.selectedJob) return;
   const button = $("#process-button");
   button.disabled = true;
   button.textContent = "Procesando…";
+  showUploadProgress(5, "Revisión automática en progreso", "Reprocesando el expediente seleccionado.");
   try {
-    await api(`/api/v1/jobs/${encodeURIComponent(state.selectedJob.id)}/process`, {
+    const response = await api(`/api/v1/jobs/${encodeURIComponent(state.selectedJob.id)}/process`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ force: false }),
     });
+    if (response.status === "PROCESSING") {
+      await waitForJobCompletion(state.selectedJob.id, { timeoutMs: 180000 });
+    }
     toast("Procesamiento técnico finalizado. Revisa los resultados antes de decidir.");
     await loadJobs();
     await openJob(state.selectedJob.id);
@@ -829,6 +1087,7 @@ async function processSelected() {
   } finally {
     button.disabled = false;
     button.textContent = "Procesar PDF";
+    window.setTimeout(hideUploadProgress, 1200);
   }
 }
 
@@ -876,6 +1135,8 @@ $("#refresh-button").addEventListener("click", () => {
   void loadJobs();
   if (window.location.hash === "#actions") void loadActions();
   if (window.location.hash === "#access") void loadAccessControlData();
+  if (window.location.hash === "#relations") void loadRelations();
+  if (window.location.hash === "#returned") void loadReturned();
 });
 $("#search-input").addEventListener("input", () => { state.page = 0; renderJobs(); });
 $("#status-filter").addEventListener("change", () => { state.pendingOnly = window.location.hash === "#reviews"; state.page = 0; renderJobs(); });
@@ -899,13 +1160,6 @@ $("#evidence-page-next").addEventListener("click", () => {
 });
 $("#process-button").addEventListener("click", processSelected);
 $("#save-review").addEventListener("click", saveReview);
-$("#save-cedula-verification").addEventListener("click", saveCedulaVerification);
-$("#use-page-as-roster").addEventListener("click", () => {
-  if (state.previewPage > 0) $("#cedula-roster-page").value = state.previewPage;
-});
-$("#use-page-as-document").addEventListener("click", () => {
-  if (state.previewPage > 0) $("#cedula-document-page").value = state.previewPage;
-});
 $("#close-detail").addEventListener("click", () => $("#detail-dialog").close());
 $("#dismiss-notice").addEventListener("click", () => $(".notice-bar").remove());
 $("#login-form").addEventListener("submit", signIn);
@@ -915,6 +1169,10 @@ $("#update-user-button").addEventListener("click", () => { void updateSelectedAc
 $("#grant-permission-button").addEventListener("click", () => { void grantPermissionToSelectedUser(); });
 $("#create-team-button").addEventListener("click", () => { void createTeam(); });
 $("#add-team-member-button").addEventListener("click", () => { void addTeamMember(); });
+$("#relations-owner-filter").addEventListener("change", () => {
+  if (window.location.hash === "#relations") void loadRelations();
+  if (window.location.hash === "#returned") void loadReturned();
+});
 window.addEventListener("hashchange", renderRoute);
 
 async function initialize() {

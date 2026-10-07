@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#17176a">
     <title>SIVAF | Sistema de Verificación de Acciones Formativas</title>
-    <link rel="stylesheet" href="./styles.css?v=20261007-security-hardening-1">
+    <link rel="stylesheet" href="./styles.css?v=20261007-upload-progress-1">
   </head>
   <body>
     <section class="auth-screen" id="auth-screen" hidden>
@@ -35,6 +35,8 @@
           <a class="nav-link active" href="#dashboard"><span class="nav-icon">▦</span>Panel general</a>
           <a class="nav-link" href="#actions"><span class="nav-icon">▤</span>Acciones formativas</a>
           <a class="nav-link" id="review-navigation" href="#reviews"><span class="nav-icon">◉</span>Revisión pendiente <span class="nav-count" id="review-count">0</span></a>
+          <a class="nav-link" id="relations-navigation" href="#relations"><span class="nav-icon">⌘</span>Relación de trabajo</a>
+          <a class="nav-link" id="returned-navigation" href="#returned"><span class="nav-icon">↩</span>Devueltos</a>
           <a class="nav-link" id="access-navigation" href="#access"><span class="nav-icon">⚿</span>Usuarios y permisos</a>
         </nav>
 
@@ -55,6 +57,16 @@
             <div><div class="eyebrow">CENTRO DE CONTROL</div><h1>Panel general</h1><p class="subtitle">Resumen de acciones, documentos y tareas de revisión.</p></div>
             <button class="button button-primary" id="upload-trigger"><span>＋</span> Cargar documento PDF</button>
             <input id="pdf-input" type="file" accept="application/pdf,.pdf" hidden>
+          </section>
+          <section class="upload-progress" id="upload-progress" hidden>
+            <div class="upload-progress-head">
+              <strong id="upload-progress-label">Procesando PDF…</strong>
+              <span id="upload-progress-percent">0%</span>
+            </div>
+            <div class="upload-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Progreso de revisión">
+              <div class="upload-progress-fill" id="upload-progress-fill"></div>
+            </div>
+            <p id="upload-progress-message">Preparando carga…</p>
           </section>
           <section class="notice-bar"><span class="notice-symbol">i</span><p><strong>Verificación asistida.</strong> SIVAF revisa el dígito de control y compara candidatos legibles. Eso no confirma por sí solo que una cédula pertenezca a la persona; toda identidad requiere revisión del documento original.</p><button id="dismiss-notice" aria-label="Cerrar aviso">×</button></section>
           <section class="stat-grid" aria-label="Resumen">
@@ -201,7 +213,29 @@
             </aside>
           </section>
         </section>
-        <footer class="page-footer"><span>SIVAF · Sistema de Verificación de Acciones Formativas</span><span>OCR de apoyo · cotejo visual requerido</span></footer>
+        <section class="route-view" id="relations-view" hidden>
+          <section class="page-heading">
+            <div><div class="eyebrow">MI ACTIVIDAD</div><h1>Relación de trabajo por usuario</h1><p class="subtitle">Admin ve todas las relaciones; cada usuario solo ve la suya.</p></div>
+            <div id="relations-owner-filter-wrap" hidden>
+              <label for="relations-owner-filter">Usuario</label>
+              <select id="relations-owner-filter"><option value="">Todos</option></select>
+            </div>
+          </section>
+          <section class="notice-bar"><span class="notice-symbol">i</span><p id="relations-summary">Cargando relaciones…</p></section>
+          <div class="panel jobs-panel">
+            <div class="table-wrap"><table><thead><tr><th>USUARIO</th><th>DOCUMENTO / ACCIÓN</th><th>ESTADO</th><th>REVISIÓN</th><th>FECHA</th></tr></thead><tbody id="relations-list"><tr><td colspan="5" class="empty-state">Cargando relación de trabajo…</td></tr></tbody></table></div>
+          </div>
+        </section>
+        <section class="route-view" id="returned-view" hidden>
+          <section class="page-heading">
+            <div><div class="eyebrow">BANDEJA DE DEVOLUCIONES</div><h1>Inicios devueltos</h1><p class="subtitle">Listado de expedientes con estado final DEVUELTA.</p></div>
+          </section>
+          <section class="notice-bar"><span class="notice-symbol">i</span><p id="returned-summary">Cargando devoluciones…</p></section>
+          <div class="panel jobs-panel">
+            <div class="table-wrap"><table><thead><tr><th>USUARIO</th><th>DOCUMENTO / ACCIÓN</th><th>OBSERVACIÓN</th><th>FECHA</th><th></th></tr></thead><tbody id="returned-list"><tr><td colspan="5" class="empty-state">Cargando devoluciones…</td></tr></tbody></table></div>
+          </div>
+        </section>
+        <footer class="page-footer"><span>SIVAF · Sistema de Verificación de Acciones Formativas</span><span>OCR y reglas automáticas de revisión</span></footer>
       </main>
     </div>
 
@@ -213,23 +247,22 @@
       <div class="detail-meta" id="detail-meta"></div>
       <div class="detail-workspace">
         <section class="detail-column">
-          <div class="detail-result"><strong>Resultados de procesamiento</strong><div id="detail-results"></div></div>
-          <div class="cedula-verification">
-            <h3>Cotejo asistido de cédula</h3>
-            <p class="form-help">Compara la fila de la lista con el documento original en el PDF. El sistema valida formato, dígito de control y coincidencia; no usa OCR para decidir identidad.</p>
-            <label for="cedula-participant-reference">Referencia de fila</label>
-            <input id="cedula-participant-reference" type="text" maxlength="32" placeholder="Fila 12" autocomplete="off" required>
-            <label for="cedula-roster-page">Página de la lista</label>
-            <input id="cedula-roster-page" type="number" min="1" step="1" inputmode="numeric" required>
-            <label for="cedula-roster-number">Cédula anotada en la lista</label>
-            <input id="cedula-roster-number" type="text" maxlength="32" inputmode="numeric" autocomplete="off" required>
-            <label for="cedula-document-page">Página del documento</label>
-            <input id="cedula-document-page" type="number" min="1" step="1" inputmode="numeric" required>
-            <label for="cedula-document-number">Cédula leída en el documento original</label>
-            <input id="cedula-document-number" type="text" maxlength="32" inputmode="numeric" autocomplete="off" required>
-            <label class="visual-confirmation"><input id="cedula-visual-confirmed" type="checkbox"> Confirmé visualmente en los originales que el nombre y la foto/documento corresponden a esta fila.</label>
-            <button class="button button-secondary" id="save-cedula-verification" type="button">Evaluar y guardar cotejo</button>
-            <p class="form-help">Los números se usan solo durante esta comparación y no se guardan en los resultados ni en la auditoría. Una lectura o digitación incierta queda pendiente; el sistema no rechaza automáticamente a una persona.</p>
+          <div class="detail-result"><strong>Resultados de procesamiento automático</strong><div id="detail-results"></div></div>
+          <div class="participants-review">
+            <div class="participants-review-head">
+              <h3>Participantes detectados por OCR</h3>
+              <small id="participants-review-summary">Sin datos.</small>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>REF</th><th>CÉDULA OCR</th><th>LISTA</th><th>DOCUMENTO</th><th>ESTADO</th><th>MOTIVO</th></tr>
+                </thead>
+                <tbody id="participants-review-list">
+                  <tr><td colspan="6" class="empty-state">No hay participantes detectados aún.</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
           <div class="review-form">
             <h3>Revisión humana</h3>
@@ -259,13 +292,11 @@
               <button class="pagination-button" id="evidence-page-previous" aria-label="Página anterior" disabled>←</button>
               <span id="evidence-page-label">Página — de —</span>
               <button class="pagination-button" id="evidence-page-next" aria-label="Página siguiente" disabled>→</button>
-              <button class="text-button" id="use-page-as-roster" type="button">Usar como lista</button>
-              <button class="text-button" id="use-page-as-document" type="button">Usar como documento</button>
             </div>
         </section>
       </div>
       <div class="dialog-actions"><button class="button button-secondary" id="process-button">Procesar PDF</button><button class="button button-primary" id="close-detail">Cerrar</button></div>
     </dialog>
-    <script src="./app.js?v=20261007-access-control-1" defer></script>
+    <script src="./app.js?v=20261007-upload-progress-1" defer></script>
   </body>
 </html>

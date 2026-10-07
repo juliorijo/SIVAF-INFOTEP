@@ -25,6 +25,8 @@ class TesseractOCRProvider(OCRProvider):
         self.languages = os.getenv("TESSERACT_LANGUAGES", "spa+eng")
         self.dpi = int(os.getenv("TESSERACT_DPI", "300"))
         self.page_segmentation_mode = int(os.getenv("TESSERACT_PSM", "3"))
+        self.max_pages = int(os.getenv("OCR_MAX_PAGES", "0"))
+        self.fast_mode = os.getenv("TESSERACT_FAST_MODE", "false").lower() == "true"
         tessdata_dir = Path(os.getenv(
             "TESSERACT_TESSDATA_DIR",
             Path.home() / "AppData" / "Local" / "SIVAF" / "tessdata",
@@ -39,10 +41,14 @@ class TesseractOCRProvider(OCRProvider):
         if not 3 <= self.page_segmentation_mode <= 13:
             raise ValueError("TESSERACT_PSM must be between 3 and 13")
 
-    def extract_text(self, pdf_path: str) -> OCRDocumentText:
+    def extract_text(self, pdf_path: str, progress_callback=None) -> OCRDocumentText:
         pages: list[OCRPageText] = []
         with pdfium.PdfDocument(pdf_path) as document:
+            total_pages = len(document)
             for page_number, page in enumerate(document, start=1):
+                if self.max_pages > 0 and page_number > self.max_pages:
+                    page.close()
+                    break
                 bitmap = page.render(scale=self.dpi / 72)
                 with bitmap.to_pil() as image:
                     text, confidence = self._read_page(image)
@@ -51,6 +57,8 @@ class TesseractOCRProvider(OCRProvider):
                     text=text.strip(),
                     confidence=confidence,
                 ))
+                if progress_callback is not None and total_pages > 0:
+                    progress_callback(page_number, total_pages)
                 bitmap.close()
                 page.close()
 
@@ -61,6 +69,8 @@ class TesseractOCRProvider(OCRProvider):
 
     def _read_page(self, image: Image.Image) -> tuple[str, float | None]:
         primary = self._read_with_mode(image, self.page_segmentation_mode)
+        if self.fast_mode:
+            return primary
         text, confidence = primary
         if confidence is not None and confidence >= 0.82 and (
             confidence >= 0.92 or not re.search(

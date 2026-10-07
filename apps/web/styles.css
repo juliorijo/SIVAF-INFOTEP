@@ -51,6 +51,13 @@ h1{font:700 26px "Segoe UI",sans-serif;color:#203a55;margin:7px 0 5px;letter-spa
 .notice-bar p{margin:0;color:#536954;font-size:10px;line-height:1.5;flex:1}
 .notice-bar strong{color:#35523a}
 .notice-bar button{border:0;background:none;color:#7d917b;font-size:19px;padding:0 4px}
+.upload-progress{background:#fff;border:1px solid #e4eaf1;border-radius:6px;padding:11px 12px;margin-bottom:12px}
+.upload-progress-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.upload-progress-head strong{font-size:10px;color:#2f475f}
+.upload-progress-head span{font-size:9px;color:#6d7f92;font-weight:700}
+.upload-progress-track{height:8px;background:#edf2f7;border-radius:999px;overflow:hidden;margin-top:8px}
+.upload-progress-fill{height:100%;width:0;background:linear-gradient(90deg,#252572,#4e7954);transition:width .25s ease}
+.upload-progress p{margin:7px 0 0;font-size:9px;color:#718294;line-height:1.4}
 .stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px;margin-bottom:19px}
 .stat-card,.panel{background:var(--surface);border:1px solid #e9edf2;border-radius:8px;box-shadow:0 2px 7px #1e385608}
 .stat-card{padding:15px 16px 14px}
@@ -127,6 +134,14 @@ td{border-top:1px solid #eff2f5;padding:11px;color:#53677b;font-size:9px}
 .meta-card strong{font-size:10px;word-break:break-all}
 .detail-result{border-left:3px solid #e1af54;background:#fff9ed;padding:12px;border-radius:0 5px 5px 0}
 .detail-result strong{font-size:10px}.detail-result p{color:#756747;font-size:9px;line-height:1.55;margin:5px 0 0}
+.participants-review{border:1px solid #e8edf2;border-radius:6px;background:#fff;overflow:hidden}
+.participants-review-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eef2f5}
+.participants-review-head h3{margin:0;font:700 11px "Segoe UI",sans-serif;color:#354d64}
+.participants-review-head small{font-size:8px;color:#8797a6}
+.participant-status{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:3px 7px;font-size:8px;font-weight:700}
+.participant-status.ok{background:#eaf6ef;color:#4c9772}
+.participant-status.review{background:#fff6e8;color:#b78028}
+.participants-review td{font-size:8px;white-space:normal}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .detail-dialog{width:min(1120px,calc(100vw - 32px));max-height:92vh;overflow:auto}
 .detail-workspace{display:grid;grid-template-columns:minmax(270px,.8fr) minmax(380px,1.2fr);gap:17px;margin-top:14px}
