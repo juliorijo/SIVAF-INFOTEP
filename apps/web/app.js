@@ -10,6 +10,7 @@ const state = {
   jobs: [], summary: {}, selectedJob: null, page: 0, pendingOnly: false,
   evidenceObjectUrl: null, previewObjectUrl: null, previewPage: 1, previewPageCount: 0,
   user: null, actions: { items: [], total: 0, latest_import: null }, actionPage: 0,
+  access: { users: [], permissions: [], teams: [] },
 };
 let refreshTimer = null;
 const $ = (selector) => document.querySelector(selector);
@@ -28,6 +29,12 @@ const finalStatusLabels = {
   DEVUELTA: "Devuelta",
   MODIFICACION: "Modificación",
   OTRO: "Otro",
+};
+const roleLabels = {
+  admin: "Administración",
+  supervisor: "Supervisor",
+  analyst: "Analista",
+  dba: "DBA",
 };
 
 function toast(message) {
@@ -54,9 +61,14 @@ function showDashboard(user) {
   $(".app-shell").hidden = false;
   $("#user-name").textContent = user.username;
   $("#user-avatar").textContent = user.username.slice(0, 2).toUpperCase();
-  $("#user-role").textContent = user.role === "admin" ? "Administración" : "Analista";
+  $("#user-role").textContent = roleLabels[user.role] || user.role;
   $("#reviewer-info").textContent = `La revisión se registrará a nombre de ${user.username}.`;
   $("#action-import-controls").hidden = user.role !== "admin";
+  const canAccessControl = ["admin", "supervisor", "dba"].includes(user.role);
+  $("#access-navigation").hidden = !canAccessControl;
+  if (!canAccessControl && window.location.hash === "#access") {
+    window.location.hash = "#dashboard";
+  }
   if (refreshTimer) window.clearInterval(refreshTimer);
   refreshTimer = window.setInterval(loadJobs, 30000);
   renderRoute();
@@ -184,6 +196,7 @@ function renderRoute() {
   const routes = {
     "#actions": ["actions-view", "Acciones formativas"],
     "#reviews": ["reviews-view", "Revisión pendiente"],
+    "#access": ["access-view", "Usuarios y permisos"],
   };
   const [viewId, title] = routes[window.location.hash] || ["dashboard-view", "Panel general"];
   document.querySelectorAll(".route-view").forEach((view) => { view.hidden = view.id !== viewId; });
@@ -199,6 +212,7 @@ function renderRoute() {
     renderJobs();
   }
   if (viewId === "actions-view") void loadActions();
+  if (viewId === "access-view") void loadAccessControlData();
 }
 
 function renderActions() {
@@ -248,6 +262,53 @@ async function loadActions() {
   } catch (error) {
     $("#actions-list").innerHTML = `<tr><td colspan="5" class="empty-state">No se pudo cargar el catálogo: ${escapeHtml(error.message)}</td></tr>`;
     $("#action-total").textContent = "Error al cargar los registros";
+  }
+}
+
+function renderAccessControlData() {
+  const users = state.access.users || [];
+  const permissions = state.access.permissions || [];
+  const teams = state.access.teams || [];
+
+  const usersBody = $("#access-users-list");
+  if (!users.length) {
+    usersBody.innerHTML = `<tr><td colspan="4" class="empty-state">No hay usuarios disponibles para este rol.</td></tr>`;
+  } else {
+    usersBody.innerHTML = users.map((user) => `<tr>
+      <td>${escapeHtml(user.username)}</td>
+      <td>${escapeHtml(roleLabels[user.role] || user.role)}</td>
+      <td>${escapeHtml(user.department || "—")}</td>
+      <td>${escapeHtml(user.status || (user.is_active ? "active" : "inactive"))}</td>
+    </tr>`).join("");
+  }
+
+  $("#access-summary").textContent = `${users.length} usuario${users.length === 1 ? "" : "s"} visible${users.length === 1 ? "" : "s"} para tu rol`;
+  $("#permissions-total").textContent = `${permissions.length} permiso${permissions.length === 1 ? "" : "s"} configurado${permissions.length === 1 ? "" : "s"}`;
+  $("#teams-total").textContent = `${teams.length} equipo${teams.length === 1 ? "" : "s"} visible${teams.length === 1 ? "" : "s"}`;
+
+  $("#permissions-preview").innerHTML = permissions.length
+    ? permissions.slice(0, 12).map((permission) => `<div class="activity-item"><span class="activity-dot"></span><span><strong>${escapeHtml(permission.display_name || permission.name)}</strong><small>${escapeHtml(permission.action || "")}${permission.resource_type ? ` · ${escapeHtml(permission.resource_type)}` : ""}</small></span></div>`).join("")
+    : `<p class="muted">No hay permisos para mostrar.</p>`;
+
+  $("#teams-preview").innerHTML = teams.length
+    ? teams.map((team) => `<div class="activity-item"><span class="activity-dot"></span><span><strong>${escapeHtml(team.name)}</strong><small>${escapeHtml(team.description || "Sin descripción")}</small></span></div>`).join("")
+    : `<p class="muted">No hay equipos para mostrar.</p>`;
+}
+
+async function loadAccessControlData() {
+  $("#access-note").textContent = "Vista de administración de acceso por roles.";
+  try {
+    const [users, permissions, teams] = await Promise.all([
+      api("/api/v1/users"),
+      api("/api/v1/permissions"),
+      api("/api/v1/teams"),
+    ]);
+    state.access = { users, permissions, teams };
+    renderAccessControlData();
+  } catch (error) {
+    state.access = { users: [], permissions: [], teams: [] };
+    renderAccessControlData();
+    $("#access-note").textContent = `No tienes permiso para ver todos los datos de acceso: ${error.message}`;
   }
 }
 
@@ -592,6 +653,7 @@ $("#pdf-input").addEventListener("change", (event) => uploadPdf(event.target.fil
 $("#refresh-button").addEventListener("click", () => {
   void loadJobs();
   if (window.location.hash === "#actions") void loadActions();
+  if (window.location.hash === "#access") void loadAccessControlData();
 });
 $("#search-input").addEventListener("input", () => { state.page = 0; renderJobs(); });
 $("#status-filter").addEventListener("change", () => { state.pendingOnly = window.location.hash === "#reviews"; state.page = 0; renderJobs(); });

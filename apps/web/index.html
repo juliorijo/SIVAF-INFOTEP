@@ -35,6 +35,7 @@
           <a class="nav-link active" href="#dashboard"><span class="nav-icon">▦</span>Panel general</a>
           <a class="nav-link" href="#actions"><span class="nav-icon">▤</span>Acciones formativas</a>
           <a class="nav-link" id="review-navigation" href="#reviews"><span class="nav-icon">◉</span>Revisión pendiente <span class="nav-count" id="review-count">0</span></a>
+          <a class="nav-link" id="access-navigation" href="#access"><span class="nav-icon">⚿</span>Usuarios y permisos</a>
         </nav>
 
         <div class="sidebar-bottom">
@@ -105,6 +106,26 @@
             <div class="table-footer"><span id="jobs-count">Cargando</span><button class="pagination-button" id="page-previous" aria-label="Página anterior">←</button><button class="pagination-button" id="page-next" aria-label="Página siguiente">→</button></div>
           </div>
         </section>
+        <section class="route-view" id="access-view" hidden>
+          <section class="page-heading">
+            <div><div class="eyebrow">CONTROL DE ACCESO</div><h1>Usuarios y permisos</h1><p class="subtitle">Gestión de cuentas, equipos y permisos del sistema.</p></div>
+          </section>
+          <section class="notice-bar"><span class="notice-symbol">i</span><p id="access-note">Vista de administración de acceso por roles.</p></section>
+          <div class="panel jobs-panel">
+            <div class="panel-heading"><div><h2>Resumen de acceso</h2><p id="access-summary">Cargando…</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>USUARIO</th><th>ROL</th><th>DEPARTAMENTO</th><th>ESTADO</th></tr></thead><tbody id="access-users-list"><tr><td colspan="4" class="empty-state">Cargando usuarios…</td></tr></tbody></table></div>
+          </div>
+          <section class="content-grid dashboard-panels">
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Permisos disponibles</h2><p id="permissions-total">Cargando permisos…</p></div></div>
+              <div id="permissions-preview" class="activity-list"><p class="muted">Sin datos.</p></div>
+            </aside>
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Equipos</h2><p id="teams-total">Cargando equipos…</p></div></div>
+              <div id="teams-preview" class="activity-list"><p class="muted">Sin datos.</p></div>
+            </aside>
+          </section>
+        </section>
         <footer class="page-footer"><span>SIVAF · Sistema de Verificación de Acciones Formativas</span><span>OCR de apoyo · cotejo visual requerido</span></footer>
       </main>
     </div>
@@ -170,6 +191,6 @@
       </div>
       <div class="dialog-actions"><button class="button button-secondary" id="process-button">Procesar PDF</button><button class="button button-primary" id="close-detail">Cerrar</button></div>
     </dialog>
-    <script src="./app.js?v=20261007-security-hardening-1" defer></script>
+    <script src="./app.js?v=20261007-access-control-1" defer></script>
   </body>
 </html>
