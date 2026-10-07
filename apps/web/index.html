@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17176a">
+    <title>SIVAF | Sistema de Verificación de Acciones Formativas</title>
+    <link rel="stylesheet" href="./styles.css?v=20261007-security-hardening-1">
+  </head>
+  <body>
+    <section class="auth-screen" id="auth-screen" hidden>
+      <div class="auth-card">
+        <img class="auth-logo" src="./logo-infotep.png" alt="INFOTEP">
+        <h1>Acceso a SIVAF</h1>
+        <p>Ingresa con tu cuenta autorizada de SIVAF.</p>
+        <form class="auth-form" id="login-form">
+          <label for="login-username">Usuario</label>
+          <input id="login-username" name="username" type="text" maxlength="80" autocomplete="username" required>
+          <label for="login-password">Contraseña</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+          <p class="auth-error" id="login-error" role="alert"></p>
+          <button class="button button-primary" id="login-submit" type="submit">Iniciar sesión</button>
+        </form>
+      </div>
+    </section>
+    <div class="app-shell" hidden>
+      <aside class="sidebar">
+        <a class="brand" href="#" aria-label="INFOTEP Inicio">
+          <img class="brand-logo" src="./logo-infotep.png" alt="INFOTEP">
+          <span class="brand-caption">SIVAF · Sistema de Verificación de Acciones Formativas</span>
+        </a>
+
+        <div class="nav-label">ESPACIO DE TRABAJO</div>
+        <nav aria-label="Navegación principal">
+          <a class="nav-link active" href="#dashboard"><span class="nav-icon">▦</span>Panel general</a>
+          <a class="nav-link" href="#actions"><span class="nav-icon">▤</span>Acciones formativas</a>
+          <a class="nav-link" id="review-navigation" href="#reviews"><span class="nav-icon">◉</span>Revisión pendiente <span class="nav-count" id="review-count">0</span></a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <div class="privacy-note"><span class="privacy-icon">▣</span><div><strong>Tu revisión, tu decisión</strong><p>El sistema detecta diferencias. No modifica sistemas institucionales.</p></div></div>
+          <div class="user-card"><span class="avatar" id="user-avatar">US</span><span><strong id="user-name">Usuario</strong><small id="user-role">Analista</small></span><button class="logout-button" id="logout-button" type="button">Salir</button></div>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div class="breadcrumbs">Inicio <span>/</span> <strong>Panel general</strong></div>
+          <div class="topbar-right"><span class="connection" id="api-status"><i></i>Conectando con el sistema</span><button class="icon-button" id="refresh-button" aria-label="Actualizar datos" title="Actualizar">↻</button></div>
+        </header>
+
+        <section class="route-view" id="dashboard-view">
+          <section class="page-heading">
+            <div><div class="eyebrow">CENTRO DE CONTROL</div><h1>Panel general</h1><p class="subtitle">Resumen de acciones, documentos y tareas de revisión.</p></div>
+            <button class="button button-primary" id="upload-trigger"><span>＋</span> Cargar documento PDF</button>
+            <input id="pdf-input" type="file" accept="application/pdf,.pdf" hidden>
+          </section>
+          <section class="notice-bar"><span class="notice-symbol">i</span><p><strong>Verificación asistida.</strong> SIVAF revisa el dígito de control y compara candidatos legibles. Eso no confirma por sí solo que una cédula pertenezca a la persona; toda identidad requiere revisión del documento original.</p><button id="dismiss-notice" aria-label="Cerrar aviso">×</button></section>
+          <section class="stat-grid" aria-label="Resumen">
+            <article class="stat-card"><div class="stat-top"><span>PDF con evidencia</span><span class="stat-icon blue">▤</span></div><strong id="stat-total">—</strong><small>Original disponible en SIVAF</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Pendientes</span><span class="stat-icon violet">◷</span></div><strong id="stat-pending">—</strong><small>Recibidos o procesándose</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Revisión humana</span><span class="stat-icon amber">◉</span></div><strong id="stat-review">—</strong><small>Esperan decisión del analista</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Incidencias</span><span class="stat-icon red">!</span></div><strong id="stat-incidents">—</strong><small>Detectadas por reglas ejecutadas</small></article>
+            <article class="stat-card"><div class="stat-top"><span>No verificables</span><span class="stat-icon gray">?</span></div><strong id="stat-unverifiable">—</strong><small>Requieren datos/OCR legibles</small></article>
+            <article class="stat-card"><div class="stat-top"><span>Procesamiento finalizado</span><span class="stat-icon green">✓</span></div><strong id="stat-complete">—</strong><small>No implica aprobación institucional</small></article>
+          </section>
+          <section class="content-grid dashboard-panels">
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Revisión humana</h2><p>Atención requerida</p></div><span class="round-icon">◉</span></div>
+              <div class="review-empty"><span class="review-illustration">✓</span><strong id="review-title">Todo al día</strong><p id="review-description">Cuando un PDF requiera revisión, aparecerá aquí.</p></div>
+              <div class="dashboard-actions"><a class="button button-secondary" href="#reviews">Abrir revisión pendiente</a><a class="text-button" href="#actions">Ver acciones formativas →</a></div>
+            </aside>
+            <aside class="panel activity-panel">
+              <div class="panel-heading"><div><h2>Actividad reciente</h2><p>Últimos documentos procesados</p></div></div>
+              <div id="activity-list" class="activity-list"><p class="muted">La actividad aparecerá al cargar documentos.</p></div>
+            </aside>
+          </section>
+        </section>
+
+        <section class="route-view" id="actions-view" hidden>
+          <section class="page-heading">
+            <div><div class="eyebrow">BASE DE DATOS</div><h1>Acciones formativas</h1><p class="subtitle">Catálogo sincronizado desde el Excel de inicios de Drive.</p></div>
+            <div id="action-import-controls" class="import-controls" hidden>
+              <label class="button button-primary" for="action-file-input"><span>↑</span> Importar / actualizar Excel</label>
+              <input id="action-file-input" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden>
+            </div>
+          </section>
+          <section class="notice-bar"><span class="notice-symbol">i</span><p id="action-import-status">Las cargas nuevas actualizan las acciones por su código y conservan las que no aparezcan en el archivo. Solo administración puede importar o modificar estos registros.</p></section>
+          <div class="panel jobs-panel">
+            <div class="panel-heading"><div><h2>Registro de acciones</h2><p id="action-total">Cargando registro…</p></div></div>
+            <div class="filter-row"><div class="search-box"><span>⌕</span><input id="action-search" type="search" placeholder="Buscar por código o nombre de acción" aria-label="Buscar acción formativa"></div></div>
+            <div class="table-wrap"><table><thead id="actions-columns"></thead><tbody id="actions-list"><tr><td class="empty-state">Cargando acciones formativas…</td></tr></tbody></table></div>
+            <div class="table-footer"><span id="actions-count">Cargando</span><button class="pagination-button" id="actions-previous" aria-label="Página anterior">←</button><button class="pagination-button" id="actions-next" aria-label="Página siguiente">→</button></div>
+          </div>
+        </section>
+
+        <section class="route-view" id="reviews-view" hidden>
+          <section class="page-heading">
+            <div><div class="eyebrow">BANDEJA DE TRABAJO</div><h1>Revisión pendiente</h1><p class="subtitle">PDF que requieren validación y decisión humana.</p></div>
+          </section>
+          <div class="panel jobs-panel">
+            <div class="panel-heading"><div><h2>Expedientes</h2><p>La revisión se guarda con usuario y fecha en el historial.</p></div></div>
+            <div class="filter-row"><div class="search-box"><span>⌕</span><input id="search-input" type="search" placeholder="Buscar código de acción o archivo" aria-label="Buscar expediente"></div><select id="status-filter" aria-label="Filtrar por estado"><option value="REQUIRES_REVIEW">Revisión requerida</option></select></div>
+            <div class="table-wrap"><table><thead><tr><th>DOCUMENTO / ACCIÓN</th><th>FECHA DE INGRESO</th><th>PÁGINAS</th><th>ESTADO</th><th></th></tr></thead><tbody id="jobs-list"><tr><td colspan="5" class="empty-state">Cargando expedientes…</td></tr></tbody></table></div>
+            <div class="table-footer"><span id="jobs-count">Cargando</span><button class="pagination-button" id="page-previous" aria-label="Página anterior">←</button><button class="pagination-button" id="page-next" aria-label="Página siguiente">→</button></div>
+          </div>
+        </section>
+        <footer class="page-footer"><span>SIVAF · Sistema de Verificación de Acciones Formativas</span><span>OCR de apoyo · cotejo visual requerido</span></footer>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <dialog id="detail-dialog" class="detail-dialog">
+      <form method="dialog"><button class="dialog-close" aria-label="Cerrar">×</button></form>
+      <div class="eyebrow">DETALLE DEL EXPEDIENTE</div><h2 id="detail-title">Expediente</h2>
+      <p class="detail-subtitle" id="detail-subtitle"></p>
+      <div class="detail-meta" id="detail-meta"></div>
+      <div class="detail-workspace">
+        <section class="detail-column">
+          <div class="detail-result"><strong>Resultados de procesamiento</strong><div id="detail-results"></div></div>
+          <div class="cedula-verification">
+            <h3>Cotejo asistido de cédula</h3>
+            <p class="form-help">Compara la fila de la lista con el documento original en el PDF. El sistema valida formato, dígito de control y coincidencia; no usa OCR para decidir identidad.</p>
+            <label for="cedula-participant-reference">Referencia de fila</label>
+            <input id="cedula-participant-reference" type="text" maxlength="32" placeholder="Fila 12" autocomplete="off" required>
+            <label for="cedula-roster-page">Página de la lista</label>
+            <input id="cedula-roster-page" type="number" min="1" step="1" inputmode="numeric" required>
+            <label for="cedula-roster-number">Cédula anotada en la lista</label>
+            <input id="cedula-roster-number" type="text" maxlength="32" inputmode="numeric" autocomplete="off" required>
+            <label for="cedula-document-page">Página del documento</label>
+            <input id="cedula-document-page" type="number" min="1" step="1" inputmode="numeric" required>
+            <label for="cedula-document-number">Cédula leída en el documento original</label>
+            <input id="cedula-document-number" type="text" maxlength="32" inputmode="numeric" autocomplete="off" required>
+            <label class="visual-confirmation"><input id="cedula-visual-confirmed" type="checkbox"> Confirmé visualmente en los originales que el nombre y la foto/documento corresponden a esta fila.</label>
+            <button class="button button-secondary" id="save-cedula-verification" type="button">Evaluar y guardar cotejo</button>
+            <p class="form-help">Los números se usan solo durante esta comparación y no se guardan en los resultados ni en la auditoría. Una lectura o digitación incierta queda pendiente; el sistema no rechaza automáticamente a una persona.</p>
+          </div>
+          <div class="review-form">
+            <h3>Revisión humana</h3>
+            <p class="form-help" id="reviewer-info">La revisión se registrará a nombre de tu usuario autenticado.</p>
+            <label for="review-comments">Observaciones</label>
+            <textarea id="review-comments" maxlength="4000" rows="3" placeholder="Notas de revisión (opcional)"></textarea>
+            <label for="final-status">Estado final de la acción (opcional)</label>
+            <select id="final-status">
+              <option value="">Pendiente de decisión</option>
+              <option value="APROBADA">Aprobada</option>
+              <option value="DEVUELTA">Devuelta</option>
+              <option value="MODIFICACION">Modificación</option>
+              <option value="OTRO">Otro</option>
+            </select>
+            <button class="button button-secondary" id="save-review">Guardar revisión</button>
+            <p class="form-help">Esta decisión solo se registra en SIVAF; no modifica sistemas institucionales.</p>
+          </div>
+          <div class="audit-section"><h3>Historial de revisión</h3><div id="audit-list"><p class="muted">Sin actividad registrada.</p></div></div>
+        </section>
+        <section class="evidence-column">
+          <div class="evidence-heading"><strong>PDF original como evidencia</strong><a id="evidence-open" target="_blank" rel="noopener">Abrir en otra pestaña ↗</a></div>
+            <div class="evidence-preview">
+              <p id="evidence-preview-status" role="status">Selecciona un expediente para ver su PDF.</p>
+              <img id="evidence-preview-image" alt="Vista previa de una página del PDF" hidden>
+            </div>
+            <div class="evidence-controls">
+              <button class="pagination-button" id="evidence-page-previous" aria-label="Página anterior" disabled>←</button>
+              <span id="evidence-page-label">Página — de —</span>
+              <button class="pagination-button" id="evidence-page-next" aria-label="Página siguiente" disabled>→</button>
+              <button class="text-button" id="use-page-as-roster" type="button">Usar como lista</button>
+              <button class="text-button" id="use-page-as-document" type="button">Usar como documento</button>
+            </div>
+        </section>
+      </div>
+      <div class="dialog-actions"><button class="button button-secondary" id="process-button">Procesar PDF</button><button class="button button-primary" id="close-detail">Cerrar</button></div>
+    </dialog>
+    <script src="./app.js?v=20261007-security-hardening-1" defer></script>
+  </body>
+</html>
