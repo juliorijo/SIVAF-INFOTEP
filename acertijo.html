@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Un acertijo</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(160deg, #1f1a24, #3a2530); color: #f3e9ec;
+    font-family: Georgia, "Times New Roman", serif;
+  }
+  .card {
+    width: min(92vw, 460px); padding: 2rem; text-align: center;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15);
+    border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  h1 { font-weight: normal; font-size: 1.5rem; margin-top: 0; }
+  p.riddle { line-height: 1.6; font-style: italic; }
+  input {
+    width: 100%; padding: .7rem; margin: 1rem 0 .6rem; border-radius: 8px;
+    border: 1px solid #b98a98; background: #2a2029; color: inherit; font-size: 1rem; text-align: center;
+  }
+  button {
+    padding: .6rem 1.4rem; border: 0; border-radius: 8px; cursor: pointer;
+    background: #b5566f; color: #fff; font-size: 1rem;
+  }
+  button:hover { background: #c9657f; }
+  #msg { min-height: 3rem; margin-top: 1.2rem; }
+  .error { color: #e8a0ae; }
+  .ok { font-size: 1.2rem; animation: fade 1.5s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+  <main class="card">
+    <h1>Un pequeño acertijo</h1>
+    <p class="riddle">
+      Cuanto más me das, más tengo para ti;<br>
+      si me guardas, desaparezco.<br>
+      No se ve, pero se siente.<br>
+      ¿Qué soy?
+    </p>
+    <form id="form">
+      <input id="answer" type="text" placeholder="Tu respuesta" autocomplete="off" aria-label="Respuesta">
+      <button type="submit">Responder</button>
+    </form>
+    <div id="msg" role="status" aria-live="polite"></div>
+  </main>
+
+<script>
+  const normalize = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const valid = ["amor", "el amor", "cariño", "carino", "el cariño", "el carino"].map(normalize);
+  const phrase = "Contigo, lo sencillo se vuelve eterno.";
+  const msg = document.getElementById("msg");
+
+  document.getElementById("form").addEventListener("submit", e => {
+    e.preventDefault();
+    const value = normalize(document.getElementById("answer").value);
+    if (valid.includes(value)) {
+      msg.className = "ok";
+      msg.textContent = "✦ " + phrase;
+    } else {
+      msg.className = "error";
+      msg.textContent = "Aún no. Piensa con el corazón.";
+    }
+  });
+</script>
+</body>
+</html>
